@@ -15,6 +15,7 @@
 # Optional targets for CI:
 #   docker build --target linter --build-context api=../api .   # Run linting
 #   docker build --target tester --build-context api=../api .   # Run tests
+#   docker build --target cuda-helper-core-builder .             # Prove the CUDA helper builds without NIXL
 
 # =============================================================================
 # Build Arguments
@@ -32,6 +33,71 @@ ARG AGENT_BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:25.11-cuda13.0-devel-ubuntu24.0
 # For placeholder target only - this default allows agent builds to succeed,
 # but placeholder builds MUST override it with --build-arg BASE_IMAGE=<image>
 ARG BASE_IMAGE=placeholder-requires-base-image-arg
+
+# =============================================================================
+# Stage: CUDA checkpoint helper core builder (no transfer adapter)
+# =============================================================================
+FROM ${AGENT_BASE_IMAGE} AS cuda-helper-core-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY cmd/cuda-checkpoint-helper/main.cpp ./cmd/cuda-checkpoint-helper/main.cpp
+COPY cmd/cuda-checkpoint-helper/cuda_checkpoint_compat.h ./cmd/cuda-checkpoint-helper/cuda_checkpoint_compat.h
+COPY cmd/cuda-checkpoint-helper/daemon_protocol.cpp ./cmd/cuda-checkpoint-helper/daemon_protocol.cpp
+COPY cmd/cuda-checkpoint-helper/daemon_protocol.h ./cmd/cuda-checkpoint-helper/daemon_protocol.h
+COPY cmd/cuda-checkpoint-helper/daemon_protocol_test.cpp ./cmd/cuda-checkpoint-helper/daemon_protocol_test.cpp
+COPY cmd/cuda-checkpoint-helper/testdata/daemon_request_v6.hex ./cmd/cuda-checkpoint-helper/testdata/daemon_request_v6.hex
+COPY cmd/cuda-checkpoint-helper/storage_manifest.cpp ./cmd/cuda-checkpoint-helper/storage_manifest.cpp
+COPY cmd/cuda-checkpoint-helper/storage_manifest.h ./cmd/cuda-checkpoint-helper/storage_manifest.h
+COPY cmd/cuda-checkpoint-helper/storage_manifest_test.cpp ./cmd/cuda-checkpoint-helper/storage_manifest_test.cpp
+COPY cmd/cuda-checkpoint-helper/transfer_config.cpp ./cmd/cuda-checkpoint-helper/transfer_config.cpp
+COPY cmd/cuda-checkpoint-helper/transfer_config.h ./cmd/cuda-checkpoint-helper/transfer_config.h
+COPY cmd/cuda-checkpoint-helper/transfer_config_test.cpp ./cmd/cuda-checkpoint-helper/transfer_config_test.cpp
+COPY cmd/cuda-checkpoint-helper/transfer_cancellation.h ./cmd/cuda-checkpoint-helper/transfer_cancellation.h
+COPY cmd/cuda-checkpoint-helper/transfer_engine.h ./cmd/cuda-checkpoint-helper/transfer_engine.h
+COPY cmd/cuda-checkpoint-helper/transfer_engine_test.cpp ./cmd/cuda-checkpoint-helper/transfer_engine_test.cpp
+COPY cmd/cuda-checkpoint-helper/transfer_backend_unavailable.cpp ./cmd/cuda-checkpoint-helper/transfer_backend_unavailable.cpp
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread \
+      -o /cuda-checkpoint-helper-no-transfer-adapter \
+      ./cmd/cuda-checkpoint-helper/main.cpp \
+      ./cmd/cuda-checkpoint-helper/daemon_protocol.cpp \
+      ./cmd/cuda-checkpoint-helper/storage_manifest.cpp \
+      ./cmd/cuda-checkpoint-helper/transfer_config.cpp \
+      ./cmd/cuda-checkpoint-helper/transfer_backend_unavailable.cpp \
+      -I/usr/local/cuda/include \
+      -L/usr/local/cuda/lib64/stubs \
+      -lcuda \
+    && ldd /cuda-checkpoint-helper-no-transfer-adapter > /tmp/helper-ldd.txt \
+    && ! grep -q nixl /tmp/helper-ldd.txt
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread \
+      -o /cuda-checkpoint-helper-daemon-protocol-test \
+      ./cmd/cuda-checkpoint-helper/daemon_protocol.cpp \
+      ./cmd/cuda-checkpoint-helper/daemon_protocol_test.cpp \
+    && /cuda-checkpoint-helper-daemon-protocol-test
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror \
+      -o /cuda-checkpoint-helper-storage-test \
+      ./cmd/cuda-checkpoint-helper/storage_manifest.cpp \
+      ./cmd/cuda-checkpoint-helper/storage_manifest_test.cpp \
+    && /cuda-checkpoint-helper-storage-test
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror \
+      -o /cuda-checkpoint-helper-transfer-config-test \
+      ./cmd/cuda-checkpoint-helper/transfer_config.cpp \
+      ./cmd/cuda-checkpoint-helper/transfer_config_test.cpp \
+    && /cuda-checkpoint-helper-transfer-config-test
+
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror \
+      -I/usr/local/cuda/include \
+      -o /cuda-checkpoint-helper-transfer-cancellation-test \
+      ./cmd/cuda-checkpoint-helper/transfer_engine_test.cpp \
+    && /cuda-checkpoint-helper-transfer-cancellation-test
 
 # =============================================================================
 # Stage: Go base - Common setup for Go builds
