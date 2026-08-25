@@ -284,7 +284,7 @@ func runDaemonAction(
 	output := stdout + stderr
 	if status != 0 {
 		if action == actionLock && flags&daemonResponseLockNotAcquired != 0 {
-			classification := error(errCheckpointLockNotAcquired)
+			classification := errCheckpointLockNotAcquired
 			if flags&daemonResponseFatal != 0 {
 				classification = errors.Join(classification, errDaemonFatal)
 			}
