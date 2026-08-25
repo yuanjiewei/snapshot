@@ -114,6 +114,7 @@ fatal because continuing would make GPU-resource ownership ambiguous.
 - Storage cleanup, including a future PageBroker abort, does not prove that the
   CUDA target or workload is safe to resume.
 
-The no-backend build used by the first stack slice validates the driver and RPC
-state machines without choosing a production transfer implementation. The
-Snapshot-local NIXL/POSIX adapter and its rollout are added separately.
+The no-backend build used by the first stack slice validates compilation,
+linkage, and the standalone protocol, manifest, transfer-configuration, and
+cancellation contracts without choosing a production transfer implementation.
+The Snapshot-local NIXL/POSIX adapter and its rollout are added separately.

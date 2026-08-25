@@ -1087,34 +1087,43 @@ daemon_protocol::Response RunDaemonOperation(
   bool error_truncated = false;
   std::string captured_output;
   std::string captured_error;
-  std::string capture_error;
-  if (!output_capture.Finish(&captured_output, &output_truncated,
-                             &capture_error) ||
-      !error_capture.Finish(&captured_error, &error_truncated,
-                            &capture_error)) {
+  std::string output_capture_error;
+  std::string error_capture_error;
+  const bool output_finished = output_capture.Finish(
+      &captured_output, &output_truncated, &output_capture_error);
+  const bool error_finished = error_capture.Finish(
+      &captured_error, &error_truncated, &error_capture_error);
+  if (!output_finished || !error_finished) {
     response.cuda_status = CUDA_ERROR_OPERATING_SYSTEM;
     response.flags |= daemon_protocol::kResponseFatal;
-    response.output.clear();
-    response.error = capture_error;
-  } else {
-    if (!captured_output.empty()) {
-      if (!response.output.empty()) {
-        response.output += '\n';
+    for (const std::string *capture_error : {&output_capture_error,
+                                             &error_capture_error}) {
+      if (capture_error->empty()) {
+        continue;
       }
-      response.output += captured_output;
-    }
-    if (!captured_error.empty()) {
       if (!response.error.empty()) {
         response.error += '\n';
       }
-      response.error += captured_error;
+      response.error += *capture_error;
     }
-    if (output_truncated) {
-      response.output += "\n[stdout truncated at daemon response limit]\n";
+  }
+  if (!captured_output.empty()) {
+    if (!response.output.empty()) {
+      response.output += '\n';
     }
-    if (error_truncated) {
-      response.error += "\n[stderr truncated at daemon response limit]\n";
+    response.output += captured_output;
+  }
+  if (!captured_error.empty()) {
+    if (!response.error.empty()) {
+      response.error += '\n';
     }
+    response.error += captured_error;
+  }
+  if (output_truncated) {
+    response.output += "\n[stdout truncated at daemon response limit]\n";
+  }
+  if (error_truncated) {
+    response.error += "\n[stderr truncated at daemon response limit]\n";
   }
   if (output_restore_failed) {
     if (!response.error.empty()) {
@@ -1197,6 +1206,7 @@ int RunHealthClient(const std::string &socket_path) {
 }
 
 bool RunHealthServer(daemon_protocol::OwnedUnixSocket *socket, int shutdown_fd,
+                     int log_fd,
                      const daemon_protocol::OperationHealth *health,
                      PersistentTargetContexts *persistent_contexts) {
   std::vector<unsigned char> packet(daemon_protocol::kMaxRequestSize + 1);
@@ -1204,8 +1214,7 @@ bool RunHealthServer(daemon_protocol::OwnedUnixSocket *socket, int shutdown_fd,
     const int server_poll =
         daemon_protocol::PollForInputOrStop(socket->fd(), shutdown_fd);
     if (server_poll == -2) {
-      std::fprintf(stderr, "health socket poll failed: %s\n",
-                   std::strerror(errno));
+      dprintf(log_fd, "health socket poll failed: %s\n", std::strerror(errno));
       return false;
     }
     if (server_poll == 0) {
@@ -1219,21 +1228,21 @@ bool RunHealthServer(daemon_protocol::OwnedUnixSocket *socket, int shutdown_fd,
       }
       if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS ||
           errno == ENOMEM) {
-        std::fprintf(stderr, "health socket accept temporarily failed: %s\n",
-                     std::strerror(errno));
+        dprintf(log_fd, "health socket accept temporarily failed: %s\n",
+                std::strerror(errno));
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         continue;
       }
-      std::fprintf(stderr, "health socket accept failed: %s\n",
-                   std::strerror(errno));
+      dprintf(log_fd, "health socket accept failed: %s\n",
+              std::strerror(errno));
       return false;
     }
     ScopedFd client_fd(accepted_fd);
     const int client_poll = daemon_protocol::PollForInputOrStop(
         client_fd.get(), shutdown_fd, {}, kClientReceiveTimeoutMilliseconds);
     if (client_poll == -2) {
-      std::fprintf(stderr, "health client poll failed: %s\n",
-                   std::strerror(errno));
+      dprintf(log_fd, "health client poll failed: %s\n",
+              std::strerror(errno));
       return false;
     }
     if (client_poll == 0) {
@@ -1268,8 +1277,8 @@ bool RunHealthServer(daemon_protocol::OwnedUnixSocket *socket, int shutdown_fd,
         // Keep liveness successful so kubelet does not restart the helper and
         // release retained contexts during shutdown. Operation requests remain
         // fail-closed until identity can be established again.
-        std::fprintf(stderr, "target-context reaping deferred: %s\n",
-                     reap_error.c_str());
+        dprintf(log_fd, "target-context reaping deferred: %s\n",
+                reap_error.c_str());
       }
     }
     std::vector<unsigned char> encoded;
@@ -1349,6 +1358,15 @@ int RunDaemon(const std::string &socket_path, uint64_t max_operation_seconds) {
   daemon_protocol::OperationHealth operation_health{
       std::chrono::seconds(max_operation_seconds)};
   operation_health.MarkReady(custom_storage_available);
+  // Operation capture redirects process-wide stderr. Keep the health thread on
+  // the original container-log descriptor so its diagnostics cannot leak into
+  // an unrelated operation response.
+  ScopedFd health_log_fd(dup(STDERR_FILENO));
+  if (health_log_fd.get() < 0) {
+    std::fprintf(stderr, "duplicate daemon health log descriptor failed: %s\n",
+                 std::strerror(errno));
+    return 1;
+  }
   daemon_protocol::ShutdownSignalOwner::ShutdownResult shutdown_result;
   daemon_protocol::ShutdownSignalOwner::ShutdownResult health_shutdown_result;
   std::atomic<bool> health_thread_failed{false};
@@ -1362,7 +1380,8 @@ int RunDaemon(const std::string &socket_path, uint64_t max_operation_seconds) {
       health_thread = std::jthread([&]() noexcept {
         try {
           if (!RunHealthServer(&health_socket, signal_owner.health_stop_fd(),
-                               &operation_health, &persistent_contexts)) {
+                               health_log_fd.get(), &operation_health,
+                               &persistent_contexts)) {
             health_thread_failed.store(true, std::memory_order_release);
             health_shutdown_result = signal_owner.RequestShutdownNoThrow();
           }

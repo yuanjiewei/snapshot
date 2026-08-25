@@ -6,6 +6,9 @@
 #include "daemon_protocol.h"
 
 #include <barrier>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <cerrno>
 #include <chrono>
@@ -92,6 +95,9 @@ void TestGoldenRequestFixture() {
   assert(parsed.job_file == "/host/proc/42/root/tmp/cuda-job");
   assert(parsed.selected_devices ==
          "GPU-12345678-1234-1234-1234-123456789abc");
+  std::vector<unsigned char> reencoded;
+  assert(EncodeRequest(parsed, &reencoded, &error));
+  assert(reencoded == encoded);
 }
 
 std::string CreateProcRoot(const Request &request) {

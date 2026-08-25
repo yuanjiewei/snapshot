@@ -91,7 +91,6 @@ struct HealthSnapshot {
   Action action = Action::kHealth;
   uint32_t pid = 0;
   uint64_t elapsed_seconds = 0;
-  uint64_t seconds_since_progress = 0;
   uint64_t deadline_seconds = 0;
   bool custom_storage_available = false;
 };
@@ -102,7 +101,6 @@ public:
 
   void MarkReady(bool custom_storage_available);
   void Begin(Action action, uint32_t pid);
-  void Progress();
   void End();
   HealthSnapshot Snapshot() const;
 
@@ -117,7 +115,6 @@ private:
   Action action_ = Action::kHealth;
   uint32_t pid_ = 0;
   Clock::time_point started_{};
-  Clock::time_point last_progress_{};
 };
 
 class OwnedUnixSocket {

@@ -469,14 +469,6 @@ void OperationHealth::Begin(Action action, uint32_t pid) {
   action_ = action;
   pid_ = pid;
   started_ = now;
-  last_progress_ = now;
-}
-
-void OperationHealth::Progress() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (busy_) {
-    last_progress_ = Clock::now();
-  }
 }
 
 void OperationHealth::End() {
@@ -501,7 +493,6 @@ HealthSnapshot OperationHealth::Snapshot() const {
   };
   if (busy_) {
     snapshot.elapsed_seconds = DurationSeconds(started_, now);
-    snapshot.seconds_since_progress = DurationSeconds(last_progress_, now);
     snapshot.healthy = ready_ && now - started_ <= max_operation_duration_;
   }
   return snapshot;
@@ -524,7 +515,6 @@ Response HealthResponse(const OperationHealth &health) {
          << ",\"action\":\"" << ActionName(snapshot.action) << "\""
          << ",\"pid\":" << snapshot.pid
          << ",\"elapsed_seconds\":" << snapshot.elapsed_seconds
-         << ",\"seconds_since_progress\":" << snapshot.seconds_since_progress
          << ",\"deadline_seconds\":" << snapshot.deadline_seconds
          << ",\"custom_storage_available\":"
          << (snapshot.custom_storage_available ? "true" : "false") << "}\n";
@@ -647,14 +637,14 @@ bool BoundedOutputCapture::Finish(std::string *output, bool *truncated,
     close(read_fd_);
     read_fd_ = -1;
   }
+  *output = std::move(output_);
+  *truncated = truncated_;
   if (!read_error_.empty()) {
     if (error != nullptr) {
       *error = "read bounded output: " + read_error_;
     }
     return false;
   }
-  *output = std::move(output_);
-  *truncated = truncated_;
   return true;
 }
 
