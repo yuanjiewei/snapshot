@@ -705,10 +705,10 @@ func (w *NodeController) runRestore(ctx context.Context, pod *corev1.Pod, artifa
 	return err != nil, err
 }
 
-// recoverCompletedRestore finalizes an interrupted status update without
-// replaying CRIU. RestoreInProgress is normally retryable after an agent
-// restart, but the restore-complete sentinel proves that execution already
-// finished and only the snapshot/Restored=True status write remains.
+// recoverCompletedRestore resolves a prior in-progress attempt without
+// replaying CRIU or CUDA. The completion sentinel proves execution finished;
+// without it the prior state-changing outcome is unknown, so V1 terminates the
+// immutable placeholder and requires a fresh restore pod.
 func (op *restoreOperation) recoverCompletedRestore(ctx context.Context) (bool, error) {
 	condition := findRestoredCondition(op.pod)
 	if condition == nil || condition.Status != corev1.ConditionFalse || condition.Reason != restoreInProgressReason {
@@ -724,7 +724,11 @@ func (op *restoreOperation) recoverCompletedRestore(ctx context.Context) (bool, 
 		return false, fmt.Errorf("check restore completion sentinel: %w", err)
 	}
 	if !exists {
-		return false, nil
+		interruptedErr := errors.New("restore was interrupted with an unknown CRIU/CUDA outcome; refusing to replay into the existing placeholder")
+		if err := op.failRestore(ctx, interruptedErr); err != nil {
+			return true, err
+		}
+		return true, nil
 	}
 	if err := op.markRestoreSucceeded(ctx); err != nil {
 		return true, fmt.Errorf("finalize completed restore: %w", err)
@@ -768,6 +772,7 @@ func (op *restoreOperation) executeRestore(ctx context.Context) (int, error) {
 		TargetPodIP:   op.pod.Status.PodIP,
 		ContainerName: op.artifact.ContainerName,
 		Clientset:     w.clientset,
+		CUDATransfer:  w.config.CUDACheckpoint.TransferSettings(),
 	}
 	return w.restoreFn(ctx, w.runtime, op.log, req, w.injector)
 }
@@ -775,15 +780,17 @@ func (op *restoreOperation) executeRestore(ctx context.Context) (int, error) {
 func (op *restoreOperation) failRestore(ctx context.Context, restoreErr error) error {
 	w := op.controller
 	op.log.Error(restoreErr, "External restore failed")
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	// Re-resolve because restore may fail before discovering the placeholder PID.
-	placeholderHostPID, _, err := w.runtime.ResolveContainer(ctx, op.containerID)
+	placeholderHostPID, _, err := w.runtime.ResolveContainer(cleanupCtx, op.containerID)
 	if err != nil {
 		return fmt.Errorf("restore failed and placeholder PID could not be resolved: %w", err)
 	}
 	if err := w.sendSignalFn(op.log, placeholderHostPID, syscall.SIGKILL, "restore failed"); err != nil {
 		return fmt.Errorf("restore failed and placeholder could not be killed: %w", err)
 	}
-	return op.markRestoreFailed(ctx, restoreErr)
+	return op.markRestoreFailed(cleanupCtx, restoreErr)
 }
 
 func (op *restoreOperation) completeRestore(ctx context.Context, placeholderHostPID int) error {

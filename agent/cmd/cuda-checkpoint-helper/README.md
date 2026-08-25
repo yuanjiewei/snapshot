@@ -88,7 +88,12 @@ request for each target.
 
 One helper request operates on one CUDA-owning PID. The Snapshot agent may
 issue several requests for one workload, but it retains ordering and an
-individual result for every target.
+individual result for every target. V1 holds one process-local operation slot
+across the whole multi-PID sequence within one target container, so sequences
+handled by one agent do not interleave. Separate agent DaemonSets on the same
+node are not coordinated;
+deployments must avoid that topology. Host-scoped and per-GPU scheduling are
+follow-ups.
 
 The daemon retains primary contexts only for the request's selected GPU set.
 After a successful operation, it associates those references with the exact
@@ -114,7 +119,9 @@ fatal because continuing would make GPU-resource ownership ambiguous.
 - Storage cleanup, including a future PageBroker abort, does not prove that the
   CUDA target or workload is safe to resume.
 
-The no-backend build used by the first stack slice validates compilation,
-linkage, and the standalone protocol, manifest, transfer-configuration, and
-cancellation contracts without choosing a production transfer implementation.
-The Snapshot-local NIXL/POSIX adapter and its rollout are added separately.
+The helper has two link-time transfer variants. The first stack slice links the
+no-backend implementation to validate compilation, linkage, and the standalone
+protocol, manifest, transfer-configuration, and cancellation contracts without
+NIXL. This Snapshot integration links the NIXL-backed POSIX adapter.
+`custom_storage_available` is true only when both the CUDA CustomStorage driver
+API and the linked transfer adapter are available.
