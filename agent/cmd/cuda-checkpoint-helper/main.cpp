@@ -928,12 +928,18 @@ daemon_protocol::Response RunDaemonOperation(
     std::chrono::seconds max_operation_duration,
     PersistentTargetContexts *persistent_contexts) {
   daemon_protocol::Response response;
+  // Until the driver lock call begins, every failure leaves the source process
+  // running. Clear this immediately before the call so callers only treat
+  // failures that are known to precede CUDA mutation as safe to leave alive.
+  if (request.action == daemon_protocol::Action::kLock) {
+    response.flags |= daemon_protocol::kResponseLockNotAcquired;
+  }
   std::string reap_error;
   const CUresult release_status =
       persistent_contexts->ReapExited("/host/proc", &reap_error);
   if (release_status != CUDA_SUCCESS) {
     response.cuda_status = release_status;
-    response.flags = daemon_protocol::kResponseFatal;
+    response.flags |= daemon_protocol::kResponseFatal;
     response.error =
         "failed to release CUDA primary contexts for an exited target";
     return response;
@@ -952,7 +958,7 @@ daemon_protocol::Response RunDaemonOperation(
   if (!output_capture.Start(&capture_setup_error) ||
       !error_capture.Start(&capture_setup_error)) {
     response.cuda_status = CUDA_ERROR_OPERATING_SYSTEM;
-    response.flags = daemon_protocol::kResponseFatal;
+    response.flags |= daemon_protocol::kResponseFatal;
     response.error = capture_setup_error;
     return response;
   }
@@ -964,7 +970,7 @@ daemon_protocol::Response RunDaemonOperation(
       dup2(output_capture.write_fd(), STDOUT_FILENO) < 0 ||
       dup2(error_capture.write_fd(), STDERR_FILENO) < 0) {
     response.cuda_status = CUDA_ERROR_OPERATING_SYSTEM;
-    response.flags = daemon_protocol::kResponseFatal;
+    response.flags |= daemon_protocol::kResponseFatal;
     response.error = "failed to redirect daemon operation output";
   } else {
     if ((!request.job_file.empty() &&
@@ -987,10 +993,6 @@ daemon_protocol::Response RunDaemonOperation(
       if (!daemon_protocol::ValidateProcessIdentity(request, "/host/proc",
                                                     &identity_error)) {
         response.cuda_status = CUDA_ERROR_INVALID_VALUE;
-        if (request.action == daemon_protocol::Action::kLock) {
-          // No CUDA driver call has occurred, so the source is still running.
-          response.flags |= daemon_protocol::kResponseLockNotAcquired;
-        }
         std::fprintf(
             stderr, "process identity changed immediately before CUDA %s: %s\n",
             daemon_protocol::ActionName(request.action),
@@ -1005,6 +1007,7 @@ daemon_protocol::Response RunDaemonOperation(
           response.flags |= daemon_protocol::kResponseFatal;
           std::fprintf(stderr, "%s\n", timeout_error.c_str());
         } else {
+          response.flags &= ~daemon_protocol::kResponseLockNotAcquired;
           response.cuda_status =
               cuCheckpointProcessLock(request.pid, &lock_args);
           if (response.cuda_status == CUDA_ERROR_NOT_READY) {
@@ -1608,8 +1611,20 @@ int main(int argc, char **argv) {
     return PrintUsageError();
   }
 
+  CUresult status = cuInit(0);
+  if (status != CUDA_SUCCESS) {
+    PrintCudaError(status);
+    return 1;
+  }
   int tid = 0;
-  const CUresult status = cuCheckpointProcessGetRestoreThreadId(pid, &tid);
+  status = cuCheckpointProcessGetRestoreThreadId(pid, &tid);
+  if (status == CUDA_ERROR_NOT_INITIALIZED ||
+      status == CUDA_ERROR_INVALID_VALUE) {
+    // The candidate PID is live but does not own CUDA checkpoint state. Keep
+    // this distinct from helper, driver, and unsupported-operation failures so
+    // the agent can fail closed on those conditions.
+    return std::fprintf(stdout, "none\n") < 0 ? 1 : 0;
+  }
   if (status != CUDA_SUCCESS) {
     PrintCudaError(status);
     return 1;

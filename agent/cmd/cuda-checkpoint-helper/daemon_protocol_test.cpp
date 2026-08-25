@@ -223,6 +223,11 @@ void TestExecutionIdentityAndFatalControlFlow() {
         },
         &response));
     assert(executions == 1);
+    if (action == Action::kLock) {
+      assert((response.flags & kResponseLockNotAcquired) != 0);
+    } else {
+      assert((response.flags & kResponseLockNotAcquired) == 0);
+    }
     std::filesystem::remove_all(proc_root);
   }
 

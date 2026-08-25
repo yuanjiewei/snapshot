@@ -428,6 +428,9 @@ bool ExecuteValidated(const Request &request, const std::string &proc_root,
   std::string identity_error;
   if (!ValidateProcessIdentity(request, proc_root, &identity_error)) {
     response->cuda_status = 1;
+    if (request.action == Action::kLock) {
+      response->flags |= kResponseLockNotAcquired;
+    }
     response->error =
         "process identity changed before CUDA operation: " + identity_error;
     return true;
