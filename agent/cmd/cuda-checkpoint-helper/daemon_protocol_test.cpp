@@ -291,11 +291,8 @@ void TestProcessIdentityStates() {
          ProcessIdentityState::kExitedOrReused);
 
   const std::filesystem::path invalid_proc_root =
-      std::filesystem::path(proc_root) / "not-a-directory";
-  {
-    std::ofstream file(invalid_proc_root);
-    file << "invalid proc root";
-  }
+      std::filesystem::path(proc_root) / "symlink-loop";
+  std::filesystem::create_symlink("symlink-loop", invalid_proc_root);
   assert(InspectProcessExistence(request.pid, invalid_proc_root, &error) ==
          ProcessExistenceState::kIndeterminate);
   std::filesystem::remove_all(proc_root);
@@ -522,15 +519,15 @@ void TestOperationTimeoutMilliseconds() {
       &timeout_ms, &error));
 }
 
-void TestBoundedOutputCaptureDrainsAndTruncates() {
+void BoundedOutputCaptureScenario() {
   BoundedOutputCapture capture(8);
   std::string error;
   assert(capture.Start(&error));
-  const std::string payload(1024 * 1024, 'x');
+  const std::string payload(1024ULL * 1024ULL, 'x');
   size_t offset = 0;
   while (offset < payload.size()) {
-    const ssize_t written =
-        write(capture.write_fd(), payload.data() + offset, payload.size() - offset);
+    const ssize_t written = write(capture.write_fd(), payload.data() + offset,
+                                  payload.size() - offset);
     assert(written > 0);
     offset += static_cast<size_t>(written);
   }
@@ -539,6 +536,10 @@ void TestBoundedOutputCaptureDrainsAndTruncates() {
   assert(capture.Finish(&output, &truncated, &error));
   assert(output == "xxxxxxxx");
   assert(truncated);
+}
+
+void TestBoundedOutputCaptureDrainsAndTruncates() {
+  RunBounded([] { BoundedOutputCaptureScenario(); });
 }
 
 } // namespace
