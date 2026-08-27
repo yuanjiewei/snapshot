@@ -56,6 +56,12 @@ enum class ProcessIdentityState : uint8_t {
   kIndeterminate,
 };
 
+enum class ProcessExistenceState : uint8_t {
+  kExists,
+  kMissing,
+  kIndeterminate,
+};
+
 struct Request {
   Action action = Action::kHealth;
   Backend backend = Backend::kUnspecified;
@@ -218,6 +224,9 @@ bool EncodeResponse(const Response &response, std::vector<unsigned char> *data,
                     std::string *error);
 bool ValidateProcessIdentity(const Request &request,
                              const std::string &proc_root, std::string *error);
+ProcessExistenceState InspectProcessExistence(uint32_t pid,
+                                              const std::string &proc_root,
+                                              std::string *error);
 ProcessIdentityState InspectProcessIdentity(const Request &request,
                                             const std::string &proc_root,
                                             std::string *error);

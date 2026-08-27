@@ -263,6 +263,8 @@ void TestProcessIdentityStates() {
   Request request = TestRequest(Action::kRestore);
   const std::string proc_root = CreateProcRoot(request);
   std::string error;
+  assert(InspectProcessExistence(request.pid, proc_root, &error) ==
+         ProcessExistenceState::kExists);
   assert(InspectProcessIdentity(request, proc_root, &error) ==
          ProcessIdentityState::kMatches);
 
@@ -283,8 +285,19 @@ void TestProcessIdentityStates() {
          ProcessIdentityState::kIndeterminate);
 
   std::filesystem::remove_all(process_dir);
+  assert(InspectProcessExistence(request.pid, proc_root, &error) ==
+         ProcessExistenceState::kMissing);
   assert(InspectProcessIdentity(request, proc_root, &error) ==
          ProcessIdentityState::kExitedOrReused);
+
+  const std::filesystem::path invalid_proc_root =
+      std::filesystem::path(proc_root) / "not-a-directory";
+  {
+    std::ofstream file(invalid_proc_root);
+    file << "invalid proc root";
+  }
+  assert(InspectProcessExistence(request.pid, invalid_proc_root, &error) ==
+         ProcessExistenceState::kIndeterminate);
   std::filesystem::remove_all(proc_root);
 }
 

@@ -345,22 +345,38 @@ bool EncodeResponse(const Response &response, std::vector<unsigned char> *data,
   return true;
 }
 
-ProcessIdentityState InspectProcessIdentity(const Request &request,
-                                            const std::string &proc_root,
-                                            std::string *error) {
+ProcessExistenceState InspectProcessExistence(uint32_t pid,
+                                              const std::string &proc_root,
+                                              std::string *error) {
   const std::filesystem::path process_dir =
-      std::filesystem::path(proc_root) / std::to_string(request.pid);
+      std::filesystem::path(proc_root) / std::to_string(pid);
   std::error_code exists_error;
   const bool process_exists = std::filesystem::exists(process_dir, exists_error);
   if (exists_error) {
     *error = "failed to inspect current process directory: " +
              exists_error.message();
-    return ProcessIdentityState::kIndeterminate;
+    return ProcessExistenceState::kIndeterminate;
   }
   if (!process_exists) {
     *error = "current process no longer exists";
+    return ProcessExistenceState::kMissing;
+  }
+  return ProcessExistenceState::kExists;
+}
+
+ProcessIdentityState InspectProcessIdentity(const Request &request,
+                                            const std::string &proc_root,
+                                            std::string *error) {
+  const ProcessExistenceState existence =
+      InspectProcessExistence(request.pid, proc_root, error);
+  if (existence == ProcessExistenceState::kMissing) {
     return ProcessIdentityState::kExitedOrReused;
   }
+  if (existence == ProcessExistenceState::kIndeterminate) {
+    return ProcessIdentityState::kIndeterminate;
+  }
+  const std::filesystem::path process_dir =
+      std::filesystem::path(proc_root) / std::to_string(request.pid);
   std::ifstream stat(process_dir / "stat");
   std::string stat_line;
   if (!std::getline(stat, stat_line)) {
