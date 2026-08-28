@@ -99,8 +99,10 @@ The `restore-complete` sentinel probe shown above is the authoritative startup
 gate. The builder keeps workload liveness and readiness probes unchanged, but
 rejects a preexisting startup probe that does not already match the restore
 gate because Kubernetes cannot compose two startup probes. The extended
-failure threshold prevents kubelet liveness checks from killing the
-placeholder while restore is in progress.
+failure threshold allows 1,800 consecutive one-second startup-probe failures.
+Kubernetes pauses liveness and readiness probes until the startup gate
+succeeds; if restoration exceeds that failure budget, kubelet restarts the
+placeholder according to the Pod's restart policy.
 
 `RestorePodOptions.SeccompProfile` controls Snapshot's pod-level localhost
 profile. An empty value leaves seccomp unmanaged. A destination container must
