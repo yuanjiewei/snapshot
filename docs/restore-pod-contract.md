@@ -58,8 +58,6 @@ spec:
       env:
         - name: SNAPSHOT_CONTROL_DIR
           value: /snapshot-control
-        - name: DYN_SNAPSHOT_CONTROL_DIR
-          value: /snapshot-control
       volumeMounts:
         - name: snapshot-control
           mountPath: /snapshot-control
@@ -77,8 +75,6 @@ spec:
       env:
         - name: SNAPSHOT_CONTROL_DIR
           value: /snapshot-control
-        - name: DYN_SNAPSHOT_CONTROL_DIR
-          value: /snapshot-control
       volumeMounts:
         - name: snapshot-control
           mountPath: /snapshot-control
@@ -95,15 +91,16 @@ spec:
 The container mapping is optional for a single same-name restore. Every
 destination mounts the one shared `snapshot-control` `emptyDir` at
 `/snapshot-control` with `subPath` equal to its container name. The canonical
-`SNAPSHOT_CONTROL_DIR` environment variable and the temporary compatibility
-alias `DYN_SNAPSHOT_CONTROL_DIR` both point to that mount.
+`SNAPSHOT_CONTROL_DIR` environment variable points to that mount. The builder
+also injects the deprecated `DYN_SNAPSHOT_CONTROL_DIR` alias during the
+migration window; hand-authored Pods may omit the alias.
 
-When a destination already defines a valid startup, liveness, or readiness
-probe, the builder copies its handler into the restore startup gate and keeps
-the original workload probes unchanged. Otherwise it installs the
-`restore-complete` sentinel probe shown above. The extended failure threshold
-prevents kubelet liveness checks from killing the placeholder while restore is
-in progress.
+The `restore-complete` sentinel probe shown above is the authoritative startup
+gate. The builder keeps workload liveness and readiness probes unchanged, but
+rejects a preexisting startup probe that does not already match the restore
+gate because Kubernetes cannot compose two startup probes. The extended
+failure threshold prevents kubelet liveness checks from killing the
+placeholder while restore is in progress.
 
 `RestorePodOptions.SeccompProfile` controls Snapshot's pod-level localhost
 profile. An empty value leaves seccomp unmanaged. A destination container must

@@ -125,7 +125,7 @@ func TestBuildRestorePodShapesFanoutIdempotently(t *testing.T) {
 	}
 }
 
-func TestBuildRestorePodPreservesWorkloadProbes(t *testing.T) {
+func TestBuildRestorePodUsesAuthoritativeRestoreGate(t *testing.T) {
 	pod := restorePodFixture()
 	pod.Spec.Containers[0].LivenessProbe = &corev1.Probe{
 		ProbeHandler:  corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/live"}},
@@ -146,10 +146,12 @@ func TestBuildRestorePodPreservesWorkloadProbes(t *testing.T) {
 	if !reflect.DeepEqual(main.LivenessProbe, beforeLiveness) || !reflect.DeepEqual(main.ReadinessProbe, beforeReadiness) {
 		t.Fatal("workload liveness or readiness probe was modified")
 	}
-	if main.StartupProbe == nil || main.StartupProbe.HTTPGet == nil || main.StartupProbe.HTTPGet.Path != "/live" {
-		t.Fatalf("liveness handler was not copied into the restore startup gate: %#v", main.StartupProbe)
+	expectedCommand := []string{"cat", SnapshotControlMountPath + "/" + RestoreCompleteFile}
+	if main.StartupProbe == nil || main.StartupProbe.Exec == nil ||
+		!reflect.DeepEqual(main.StartupProbe.Exec.Command, expectedCommand) {
+		t.Fatalf("restore startup gate does not check the completion sentinel: %#v", main.StartupProbe)
 	}
-	if main.StartupProbe.InitialDelaySeconds != 0 || main.StartupProbe.PeriodSeconds != 1 ||
+	if main.StartupProbe.InitialDelaySeconds != 0 || main.StartupProbe.TimeoutSeconds != 1 || main.StartupProbe.PeriodSeconds != 1 ||
 		main.StartupProbe.FailureThreshold != restoreStartupFailureThreshold || main.StartupProbe.SuccessThreshold != 1 {
 		t.Fatalf("restore startup gate timing is incorrect: %#v", main.StartupProbe)
 	}
@@ -229,7 +231,6 @@ func TestBuildRestorePodRejectsConflictsAtomically(t *testing.T) {
 			name: "startup probe",
 			mutate: func(pod *corev1.Pod) {
 				pod.Spec.Containers[0].StartupProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
-					Exec:    &corev1.ExecAction{Command: []string{"true"}},
 					HTTPGet: &corev1.HTTPGetAction{Path: "/ready"},
 				}}
 			},
@@ -249,6 +250,13 @@ func TestBuildRestorePodRejectsConflictsAtomically(t *testing.T) {
 		{
 			name:     "missing destination",
 			mappings: []RestoreContainerMapping{{Source: "main", Destination: "missing"}},
+		},
+		{
+			name: "duplicate destination",
+			mappings: []RestoreContainerMapping{
+				{Source: "main", Destination: "main"},
+				{Source: "main", Destination: "main"},
+			},
 		},
 	}
 	for _, test := range tests {
@@ -278,6 +286,25 @@ func TestBuildRestorePodRejectsConflictsAtomically(t *testing.T) {
 	}
 }
 
+func TestValidateRestorePodAllowsMissingLegacyControlEnvironment(t *testing.T) {
+	pod, err := BuildRestorePod(restorePodFixture(), "snapshot-a", singleRestoreMapping(), RestorePodOptions{})
+	if err != nil {
+		t.Fatalf("BuildRestorePod() failed: %v", err)
+	}
+	pod.Spec.Containers[0].Env = removeRestoreEnv(pod.Spec.Containers[0].Env, LegacySnapshotControlDirEnv)
+
+	if err := ValidateRestorePod(pod, "snapshot-a", singleRestoreMapping(), RestorePodOptions{}); err != nil {
+		t.Fatalf("ValidateRestorePod() rejected Pod without deprecated environment alias: %v", err)
+	}
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name:  LegacySnapshotControlDirEnv,
+		Value: "/wrong",
+	})
+	if err := ValidateRestorePod(pod, "snapshot-a", singleRestoreMapping(), RestorePodOptions{}); err == nil {
+		t.Fatal("ValidateRestorePod() accepted conflicting deprecated environment alias")
+	}
+}
+
 func TestValidateRestorePodRejectsContractDrift(t *testing.T) {
 	options := RestorePodOptions{SeccompProfile: DefaultSeccompLocalhostProfile}
 	valid, err := BuildRestorePod(restorePodFixture(), "snapshot-a", singleRestoreMapping(), options)
@@ -298,7 +325,7 @@ func TestValidateRestorePodRejectsContractDrift(t *testing.T) {
 			pod.Spec.Containers[0].Env = removeRestoreEnv(pod.Spec.Containers[0].Env, SnapshotControlDirEnv)
 		},
 		"startup gate": func(pod *corev1.Pod) {
-			pod.Spec.Containers[0].StartupProbe.PeriodSeconds = 2
+			pod.Spec.Containers[0].StartupProbe.Exec.Command = []string{"true"}
 		},
 		"seccomp": func(pod *corev1.Pod) {
 			pod.Spec.SecurityContext.SeccompProfile = nil

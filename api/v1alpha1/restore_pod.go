@@ -358,14 +358,15 @@ func ensureControlEnv(container *corev1.Container, name string) error {
 }
 
 func validateControlEnvironment(container *corev1.Container) error {
-	for _, name := range []string{SnapshotControlDirEnv, LegacySnapshotControlDirEnv} {
-		found, err := hasValidControlEnv(container, name)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return fmt.Errorf("container %q is missing %s environment variable", container.Name, name)
-		}
+	found, err := hasValidControlEnv(container, SnapshotControlDirEnv)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("container %q is missing %s environment variable", container.Name, SnapshotControlDirEnv)
+	}
+	if _, err := hasValidControlEnv(container, LegacySnapshotControlDirEnv); err != nil {
+		return err
 	}
 	return nil
 }
@@ -389,31 +390,18 @@ func hasValidControlEnv(container *corev1.Container, name string) (bool, error) 
 }
 
 func ensureRestoreStartupProbe(container *corev1.Container) error {
-	probe := container.StartupProbe
-	if probe == nil {
-		probe = container.LivenessProbe
-		if probe == nil {
-			probe = container.ReadinessProbe
-		}
+	if container.StartupProbe != nil {
+		return validateRestoreStartupProbe(container)
 	}
-	if probe == nil {
-		probe = &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
-				Command: []string{"cat", path.Join(SnapshotControlMountPath, RestoreCompleteFile)},
-			}},
-			TimeoutSeconds: 1,
-		}
-	} else {
-		if err := validateProbeHandler(container.Name, &probe.ProbeHandler); err != nil {
-			return err
-		}
-		probe = probe.DeepCopy()
+	container.StartupProbe = &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
+			Command: []string{"cat", path.Join(SnapshotControlMountPath, RestoreCompleteFile)},
+		}},
+		TimeoutSeconds:   1,
+		PeriodSeconds:    1,
+		FailureThreshold: restoreStartupFailureThreshold,
+		SuccessThreshold: 1,
 	}
-	probe.InitialDelaySeconds = 0
-	probe.PeriodSeconds = 1
-	probe.FailureThreshold = restoreStartupFailureThreshold
-	probe.SuccessThreshold = 1
-	container.StartupProbe = probe
 	return nil
 }
 
@@ -422,30 +410,14 @@ func validateRestoreStartupProbe(container *corev1.Container) error {
 	if probe == nil {
 		return fmt.Errorf("container %q is missing the restore startup gate", container.Name)
 	}
-	if err := validateProbeHandler(container.Name, &probe.ProbeHandler); err != nil {
-		return err
+	expectedCommand := []string{"cat", path.Join(SnapshotControlMountPath, RestoreCompleteFile)}
+	if probe.Exec == nil || !reflect.DeepEqual(probe.Exec.Command, expectedCommand) ||
+		probe.HTTPGet != nil || probe.TCPSocket != nil || probe.GRPC != nil {
+		return fmt.Errorf("container %q restore startup gate must check %s", container.Name, expectedCommand[1])
 	}
-	if probe.InitialDelaySeconds != 0 || probe.PeriodSeconds != 1 ||
+	if probe.InitialDelaySeconds != 0 || probe.TimeoutSeconds != 1 || probe.PeriodSeconds != 1 ||
 		probe.FailureThreshold != restoreStartupFailureThreshold || probe.SuccessThreshold != 1 {
 		return fmt.Errorf("container %q has a conflicting restore startup gate", container.Name)
-	}
-	return nil
-}
-
-func validateProbeHandler(containerName string, handler *corev1.ProbeHandler) error {
-	actions := 0
-	for _, present := range []bool{
-		handler.Exec != nil,
-		handler.HTTPGet != nil,
-		handler.TCPSocket != nil,
-		handler.GRPC != nil,
-	} {
-		if present {
-			actions++
-		}
-	}
-	if actions != 1 {
-		return fmt.Errorf("container %q restore startup probe must define exactly one handler", containerName)
 	}
 	return nil
 }
