@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -166,10 +167,10 @@ func (r *SnapshotJobReconciler) validatePodSnapshotForAdoption(ctx context.Conte
 	if err != nil {
 		return &snapshotJobFailure{reason: snapshotv1alpha1.ReasonInvalidSpec, cause: err}, nil
 	}
-	if !podSnapshotHasExpectedIdentity(snap, desired) {
+	if !podSnapshotMatchesDesired(snap, desired) {
 		return &snapshotJobFailure{
 			reason: snapshotv1alpha1.ReasonPodSnapshotNameConflict,
-			cause: fmt.Errorf("existing PodSnapshot %q does not carry the immutable source identity expected for this SnapshotJob",
+			cause: fmt.Errorf("existing PodSnapshot %q does not carry the immutable source and metadata expected for this SnapshotJob",
 				snap.Name),
 		}, nil
 	}
@@ -190,18 +191,20 @@ func buildPodSnapshot(sj *snapshotv1alpha1.SnapshotJob, pod *corev1.Pod) (*snaps
 	if _, err := snapshotJobTargetContainer(sj); err != nil {
 		return nil, err
 	}
+	labels, annotations, err := podSnapshotTemplateMetadata(sj)
+	if err != nil {
+		return nil, err
+	}
 	return &snapshotv1alpha1.PodSnapshot{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: snapshotv1alpha1.GroupVersion.String(),
 			Kind:       "PodSnapshot",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      sj.Name,
-			Namespace: sj.Namespace,
-			Labels: map[string]string{
-				snapshotv1alpha1.SnapshotJobOwnerLabel:    sj.Name,
-				snapshotv1alpha1.SnapshotJobOwnerUIDLabel: string(sj.UID),
-			},
+			Name:        sj.Name,
+			Namespace:   sj.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: snapshotv1alpha1.PodSnapshotSpec{
 			Source: snapshotv1alpha1.PodSnapshotSource{
@@ -213,6 +216,24 @@ func buildPodSnapshot(sj *snapshotv1alpha1.SnapshotJob, pod *corev1.Pod) (*snaps
 			},
 		},
 	}, nil
+}
+
+func podSnapshotTemplateMetadata(sj *snapshotv1alpha1.SnapshotJob) (map[string]string, map[string]string, error) {
+	if err := validatePodSnapshotTemplateMetadata(sj); err != nil {
+		return nil, nil, err
+	}
+	metadata := sj.Spec.PodSnapshotTemplate.Metadata
+	var labels, annotations map[string]string
+	if metadata != nil {
+		labels = maps.Clone(metadata.Labels)
+		annotations = maps.Clone(metadata.Annotations)
+	}
+	if labels == nil {
+		labels = make(map[string]string, 2)
+	}
+	labels[snapshotv1alpha1.SnapshotJobOwnerLabel] = sj.Name
+	labels[snapshotv1alpha1.SnapshotJobOwnerUIDLabel] = string(sj.UID)
+	return labels, annotations, nil
 }
 
 // createPodSnapshot creates this SnapshotJob's PodSnapshot. The caller has
@@ -252,8 +273,8 @@ func (r *SnapshotJobReconciler) classifyExistingPodSnapshot(ctx context.Context,
 	if err := validatePodSnapshotOwnership(sj, existing); err != nil {
 		return nil, err
 	}
-	if !podSnapshotHasExpectedIdentity(existing, desired) {
-		return nil, fmt.Errorf("%w: PodSnapshot %q does not match the expected source identity",
+	if !podSnapshotMatchesDesired(existing, desired) {
+		return nil, fmt.Errorf("%w: PodSnapshot %q does not match the expected source and metadata",
 			errPodSnapshotNameConflict, desired.Name)
 	}
 	return existing, nil
@@ -271,7 +292,7 @@ func validatePodSnapshotOwnership(sj *snapshotv1alpha1.SnapshotJob, snap *snapsh
 	return nil
 }
 
-func podSnapshotHasExpectedIdentity(actual, desired *snapshotv1alpha1.PodSnapshot) bool {
+func podSnapshotMatchesDesired(actual, desired *snapshotv1alpha1.PodSnapshot) bool {
 	actualSource := actual.Spec.Source.PodRef
 	desiredSource := desired.Spec.Source.PodRef
 	if actualSource.Name != desiredSource.Name || actualSource.UID != desiredSource.UID ||
@@ -280,6 +301,15 @@ func podSnapshotHasExpectedIdentity(actual, desired *snapshotv1alpha1.PodSnapsho
 	}
 	for i := range actualSource.Containers {
 		if actualSource.Containers[i] != desiredSource.Containers[i] {
+			return false
+		}
+	}
+	return containsMetadata(actual.Labels, desired.Labels) && containsMetadata(actual.Annotations, desired.Annotations)
+}
+
+func containsMetadata(actual, expected map[string]string) bool {
+	for key, value := range expected {
+		if actual[key] != value {
 			return false
 		}
 	}

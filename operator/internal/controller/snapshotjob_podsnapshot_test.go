@@ -30,6 +30,10 @@ import (
 func TestBuildPodSnapshot(t *testing.T) {
 	sj := minimalSnapshotJob()
 	sj.UID = types.UID("sj-uid")
+	sj.Spec.PodSnapshotTemplate.Metadata = &snapshotv1alpha1.PodSnapshotTemplateMetadata{
+		Labels:      map[string]string{"dynamo.nvidia.com/worker-generation": "abc123"},
+		Annotations: map[string]string{"dynamo.nvidia.com/gms-mode": "enabled"},
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "warm-worker-abcde", Namespace: "inference", UID: types.UID("pod-uid")},
 	}
@@ -45,6 +49,11 @@ func TestBuildPodSnapshot(t *testing.T) {
 	t.Run("carries the owner label instead", func(t *testing.T) {
 		assert.Equal(t, sj.Name, snap.Labels[snapshotv1alpha1.SnapshotJobOwnerLabel])
 		assert.Equal(t, string(sj.UID), snap.Labels[snapshotv1alpha1.SnapshotJobOwnerUIDLabel])
+	})
+
+	t.Run("propagates caller metadata", func(t *testing.T) {
+		assert.Equal(t, "abc123", snap.Labels["dynamo.nvidia.com/worker-generation"])
+		assert.Equal(t, "enabled", snap.Annotations["dynamo.nvidia.com/gms-mode"])
 	})
 
 	t.Run("pins the source pod name and UID", func(t *testing.T) {
@@ -90,6 +99,30 @@ func TestBuildPodSnapshot(t *testing.T) {
 		assert.Equal(t, original, src.Spec.PodSnapshotTemplate.TargetContainers,
 			"mutating the PodSnapshot's copy must not affect the SnapshotJob's own spec slice")
 	})
+
+	t.Run("does not share metadata maps with the SnapshotJob", func(t *testing.T) {
+		got, err := buildPodSnapshot(sj, pod)
+		require.NoError(t, err)
+		got.Labels["dynamo.nvidia.com/worker-generation"] = "changed"
+		got.Annotations["dynamo.nvidia.com/gms-mode"] = "disabled"
+
+		assert.Equal(t, "abc123", sj.Spec.PodSnapshotTemplate.Metadata.Labels["dynamo.nvidia.com/worker-generation"])
+		assert.Equal(t, "enabled", sj.Spec.PodSnapshotTemplate.Metadata.Annotations["dynamo.nvidia.com/gms-mode"])
+	})
+
+	for _, reserved := range []string{
+		snapshotv1alpha1.SnapshotJobOwnerLabel,
+		snapshotv1alpha1.SnapshotJobOwnerUIDLabel,
+	} {
+		t.Run("rejects reserved label "+reserved, func(t *testing.T) {
+			bad := minimalSnapshotJob()
+			bad.Spec.PodSnapshotTemplate.Metadata = &snapshotv1alpha1.PodSnapshotTemplateMetadata{
+				Labels: map[string]string{reserved: "caller-value"},
+			}
+			_, err := buildPodSnapshot(bad, pod)
+			require.ErrorContains(t, err, "controller-owned")
+		})
+	}
 }
 
 // ---- reconciler-level PodSnapshot creation ----
@@ -369,6 +402,22 @@ func TestClassifyExistingPodSnapshot(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = r.classifyExistingPodSnapshot(context.Background(), sj, desired, errors.New("AlreadyExists"))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errPodSnapshotNameConflict)
+	})
+
+	t.Run("missing caller metadata: PodSnapshotNameConflict", func(t *testing.T) {
+		withMetadata := sj.DeepCopy()
+		withMetadata.Spec.PodSnapshotTemplate.Metadata = &snapshotv1alpha1.PodSnapshotTemplateMetadata{
+			Annotations: map[string]string{"dynamo.nvidia.com/gms-mode": "enabled"},
+		}
+		desired, err := buildPodSnapshot(withMetadata, pod)
+		require.NoError(t, err)
+		existing := desired.DeepCopy()
+		delete(existing.Annotations, "dynamo.nvidia.com/gms-mode")
+		r := makeSnapshotJobReconciler(s, existing)
+
+		_, err = r.classifyExistingPodSnapshot(context.Background(), withMetadata, desired, errors.New("AlreadyExists"))
 		require.Error(t, err)
 		assert.ErrorIs(t, err, errPodSnapshotNameConflict)
 	})
