@@ -21,7 +21,11 @@ type RestoreContainerMapping struct {
 // GetRestoreFromSnapshotName returns the same-namespace PodSnapshot named by
 // the restore-from annotation.
 func GetRestoreFromSnapshotName(annotations map[string]string) (string, error) {
-	snapshotName := strings.TrimSpace(annotations[RestoreFromAnnotation])
+	return validateRestoreFromSnapshotName(annotations[RestoreFromAnnotation])
+}
+
+func validateRestoreFromSnapshotName(value string) (string, error) {
+	snapshotName := strings.TrimSpace(value)
 	if snapshotName == "" {
 		return "", fmt.Errorf("%s must name a PodSnapshot", RestoreFromAnnotation)
 	}

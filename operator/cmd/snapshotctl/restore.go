@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	snapshotv1alpha1 "github.com/ai-dynamo/snapshot/api/v1alpha1"
-	snapshotprotocol "github.com/ai-dynamo/snapshot/operator/internal/protocol"
 )
 
 type restoreOptions struct {
@@ -41,22 +40,29 @@ func runRestoreFlow(ctx context.Context, opts restoreOptions) (*result, error) {
 	if len(containers) != 1 || strings.TrimSpace(containers[0]) == "" {
 		return nil, fmt.Errorf("PodSnapshot %s/%s must capture exactly one container", namespace, snapshotName)
 	}
+	mappings, err := snapshotv1alpha1.RestoreContainerMappingsFromAnnotations(pod.Annotations, containers[0])
+	if err != nil {
+		return nil, err
+	}
 
-	restorePod, err := snapshotprotocol.NewRestorePod(&corev1.Pod{
+	candidate := &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:         pod.Name,
 			GenerateName: pod.GenerateName,
+			Namespace:    namespace,
 			Labels:       pod.Labels,
 			Annotations:  pod.Annotations,
 		},
 		Spec: *pod.Spec.DeepCopy(),
-	}, snapshotprotocol.PodOptions{
-		Namespace:       namespace,
-		SnapshotName:    snapshotName,
-		SourceContainer: containers[0],
-		SeccompProfile:  snapshotv1alpha1.DefaultSeccompLocalhostProfile,
-	})
+	}
+	candidate.Spec.RestartPolicy = corev1.RestartPolicyNever
+	restorePod, err := snapshotv1alpha1.BuildRestorePod(
+		candidate,
+		snapshotName,
+		mappings,
+		snapshotv1alpha1.RestorePodOptions{SeccompProfile: snapshotv1alpha1.DefaultSeccompLocalhostProfile},
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -600,64 +600,21 @@ func validateRestoreTarget(pod *corev1.Pod, snapshot *snapshotv1alpha1.PodSnapsh
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := validateRestoreMappingsForPod(&pod.Spec, mappings, containerName); err != nil {
+	if err := snapshotv1alpha1.ValidateRestoreContainerMappings(mappings, containerName); err != nil {
+		return nil, nil, err
+	}
+	if err := snapshotv1alpha1.ValidateRestorePod(
+		pod,
+		snapshot.Name,
+		mappings,
+		// Seccomp injection is optional producer policy. The node agent validates
+		// the universal restore contract and leaves profile selection to the
+		// producer that shaped the Pod.
+		snapshotv1alpha1.RestorePodOptions{},
+	); err != nil {
 		return nil, nil, err
 	}
 	return &restoreTarget{SnapshotName: snapshot.Name, ContentUID: string(content.UID), SourceContainerName: containerName}, mappings, nil
-}
-
-// validateRestoreMappingsForPod validates the mapping contract and ensures
-// every destination exists in the restore Pod spec.
-func validateRestoreMappingsForPod(spec *corev1.PodSpec, mappings []snapshotv1alpha1.RestoreContainerMapping, capturedSource string) error {
-	if err := snapshotv1alpha1.ValidateRestoreContainerMappings(mappings, capturedSource); err != nil {
-		return err
-	}
-	if len(mappings) > 1 {
-		hasControlVolume := false
-		for _, volume := range spec.Volumes {
-			if volume.Name == snapshotv1alpha1.SnapshotControlVolumeName && volume.EmptyDir != nil {
-				hasControlVolume = true
-				break
-			}
-		}
-		if !hasControlVolume {
-			return fmt.Errorf("multi-container restore requires %s emptyDir volume", snapshotv1alpha1.SnapshotControlVolumeName)
-		}
-	}
-	for _, mapping := range mappings {
-		var destination *corev1.Container
-		for i := range spec.Containers {
-			if spec.Containers[i].Name == mapping.Destination {
-				destination = &spec.Containers[i]
-				break
-			}
-		}
-		if destination == nil {
-			return fmt.Errorf("restore pod has no destination container named %q", mapping.Destination)
-		}
-		if len(mappings) == 1 {
-			continue
-		}
-		validControlMount := false
-		for _, mount := range destination.VolumeMounts {
-			if mount.Name == snapshotv1alpha1.SnapshotControlVolumeName &&
-				mount.MountPath == snapshotv1alpha1.SnapshotControlMountPath &&
-				mount.SubPath == mapping.Destination {
-				validControlMount = true
-				break
-			}
-		}
-		if !validControlMount {
-			return fmt.Errorf(
-				"multi-container restore destination %q requires %s mounted at %s with subPath %q",
-				mapping.Destination,
-				snapshotv1alpha1.SnapshotControlVolumeName,
-				snapshotv1alpha1.SnapshotControlMountPath,
-				mapping.Destination,
-			)
-		}
-	}
-	return nil
 }
 
 // resolveRestoreArtifact resolves the validated restore target to its physical

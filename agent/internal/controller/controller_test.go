@@ -206,7 +206,7 @@ func pendingRestoreReason(t *testing.T, err error) string {
 }
 
 func restorePod(annotations map[string]string) *corev1.Pod {
-	return &corev1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "restore-worker",
 			Namespace:   "inference",
@@ -231,6 +231,21 @@ func restorePod(annotations map[string]string) *corev1.Pod {
 			}},
 		},
 	}
+	snapshotName, restoreRequested := annotations[snapshotv1alpha1.RestoreFromAnnotation]
+	_, hasExplicitMapping := annotations[snapshotv1alpha1.RestoreContainerMapAnnotation]
+	if !restoreRequested || hasExplicitMapping {
+		return pod
+	}
+	shaped, err := snapshotv1alpha1.BuildRestorePod(
+		pod,
+		snapshotName,
+		[]snapshotv1alpha1.RestoreContainerMapping{{Source: "main", Destination: "main"}},
+		snapshotv1alpha1.RestorePodOptions{},
+	)
+	if err != nil {
+		panic(err)
+	}
+	return shaped
 }
 
 func multiRestorePod() *corev1.Pod {
@@ -264,7 +279,19 @@ func multiRestorePod() *corev1.Pod {
 		{Name: "engine-0", ContainerID: "containerd://engine-0-id", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
 		{Name: "engine-1", ContainerID: "containerd://engine-1-id", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
 	}
-	return pod
+	shaped, err := snapshotv1alpha1.BuildRestorePod(
+		pod,
+		"snapshot-a",
+		[]snapshotv1alpha1.RestoreContainerMapping{
+			{Source: "main", Destination: "engine-0"},
+			{Source: "main", Destination: "engine-1"},
+		},
+		snapshotv1alpha1.RestorePodOptions{},
+	)
+	if err != nil {
+		panic(err)
+	}
+	return shaped
 }
 
 func processQueuedRestorePod(t *testing.T, w *NodeController, pod *corev1.Pod) {
@@ -569,6 +596,33 @@ func TestPreflightRestoreRejectsSharedMultiDestinationControlMount(t *testing.T)
 	assert.Nil(t, plan)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `subPath "engine-1"`)
+}
+
+func TestPreflightRestoreRejectsInvalidRestorePodContract(t *testing.T) {
+	snapshot, content := readySnapshotObjects()
+	tests := map[string]func(*corev1.Pod){
+		"control volume": func(pod *corev1.Pod) {
+			pod.Spec.Volumes = nil
+		},
+		"control environment": func(pod *corev1.Pod) {
+			pod.Spec.Containers[0].Env = nil
+		},
+		"startup gate": func(pod *corev1.Pod) {
+			pod.Spec.Containers[0].StartupProbe = nil
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			pod := restorePod(map[string]string{snapshotv1alpha1.RestoreFromAnnotation: "snapshot-a"})
+			mutate(pod)
+			w := makeTestController(t, pod, snapshot, content)
+
+			plan, err := w.preflightRestore(context.Background(), pod)
+
+			assert.Nil(t, plan)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestPreflightRestoreRetriesInProgressCondition(t *testing.T) {

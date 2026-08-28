@@ -57,10 +57,10 @@ const (
 	// control mount path to the workload.
 	SnapshotControlDirEnv = "SNAPSHOT_CONTROL_DIR"
 
-	// LegacySnapshotControlDirEnv is the environment variable exposing the
-	// control mount path to the workload. EnsureControlVolume injects both
-	// during the migration window so existing workload images (which read
-	// this name) keep working while new images can move to
+	// LegacySnapshotControlDirEnv is the deprecated environment variable
+	// exposing the control mount path to the workload. Snapshot Pod shaping
+	// injects both names during the migration window so existing workload
+	// images keep working while new images can move to
 	// SnapshotControlDirEnv.
 	//
 	// Deprecated: use SnapshotControlDirEnv instead. Remove once no workload
