@@ -150,7 +150,7 @@ def restore_pod(
         {"name": RESTORE_TOKEN_ENV, "value": run.restore_token},
     ]
     spec["containers"][0]["startupProbe"] = {
-        "exec": {"command": ["/bin/bash", "-lc", f"test -f {RESTORE_DONE}"]},
+        "exec": {"command": ["cat", RESTORE_DONE]},
         "periodSeconds": 1,
         "failureThreshold": 1800,
     }
@@ -211,7 +211,7 @@ def multi_restore_pod(
                 {"name": RESTORE_TOKEN_ENV, "value": restore_tokens[destination]},
             ],
             "startupProbe": {
-                "exec": {"command": ["/bin/bash", "-lc", f"test -f {RESTORE_DONE}"]},
+                "exec": {"command": ["cat", RESTORE_DONE]},
                 "periodSeconds": 1,
                 "failureThreshold": 1800,
             },
@@ -271,7 +271,10 @@ def base_pod_spec(
             }
         )
     if control_volume:
-        container["volumeMounts"].insert(0, {"name": "snapshot-control", "mountPath": CONTROL_DIR})
+        container["volumeMounts"].insert(
+            0,
+            {"name": "snapshot-control", "mountPath": CONTROL_DIR, "subPath": CONTAINER},
+        )
         volumes.insert(0, {"name": "snapshot-control", "emptyDir": {}})
     spec: dict[str, Any] = {
         "restartPolicy": "Never",

@@ -67,6 +67,18 @@ const (
 	// image depends on this name.
 	LegacySnapshotControlDirEnv = "DYN_SNAPSHOT_CONTROL_DIR"
 
+	// RestoreStandbyModeEnv asks standby-aware workload entrypoints to remain
+	// inert until Snapshot replaces them with restored processes. Snapshot's
+	// generic Pod builder does not inject this workload-specific setting.
+	RestoreStandbyModeEnv = "SNAPSHOT_RESTORE_STANDBY"
+
+	// LegacyRestoreStandbyModeEnv is the deprecated Dynamo restore standby
+	// environment variable. Snapshot publishes the name for producers that
+	// support existing workload images but does not inject it.
+	//
+	// Deprecated: use RestoreStandbyModeEnv for new workload integrations.
+	LegacyRestoreStandbyModeEnv = "DYN_SNAPSHOT_RESTORE_STANDBY"
+
 	// SnapshotCompleteFile named the sentinel the agent used to release a
 	// checkpointed workload when leave-running dumps existed. A checkpoint now
 	// always terminates the source process, so the agent no longer writes it;

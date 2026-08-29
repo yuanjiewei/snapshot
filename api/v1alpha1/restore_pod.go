@@ -48,20 +48,41 @@ func BuildRestorePod(
 	if err := ensureRestorePodSpec(&result.Spec, mappings, options); err != nil {
 		return nil, err
 	}
-	if err := ValidateRestorePod(result, snapshotName, mappings, options); err != nil {
+	if err := validateCanonicalRestorePod(result, snapshotName, mappings, options); err != nil {
 		return nil, fmt.Errorf("validate shaped restore pod: %w", err)
 	}
 	return result, nil
 }
 
 // ValidateRestorePod verifies that pod implements the declarative Snapshot
-// restore contract for snapshotName and mappings. It performs no API reads and
-// never mutates the Pod.
+// restore runtime contract for snapshotName and mappings. It accepts supported
+// restore-completion gates independently of their probe timing so Pods remain
+// valid across builder versions. It performs no API reads and never mutates the
+// Pod.
 func ValidateRestorePod(
 	pod *corev1.Pod,
 	snapshotName string,
 	mappings []RestoreContainerMapping,
 	options RestorePodOptions,
+) error {
+	return validateRestorePod(pod, snapshotName, mappings, options, validateRestoreStartupProbe)
+}
+
+func validateCanonicalRestorePod(
+	pod *corev1.Pod,
+	snapshotName string,
+	mappings []RestoreContainerMapping,
+	options RestorePodOptions,
+) error {
+	return validateRestorePod(pod, snapshotName, mappings, options, validateCanonicalRestoreStartupProbe)
+}
+
+func validateRestorePod(
+	pod *corev1.Pod,
+	snapshotName string,
+	mappings []RestoreContainerMapping,
+	options RestorePodOptions,
+	validateStartupProbe func(*corev1.Container) error,
 ) error {
 	if pod == nil {
 		return fmt.Errorf("restore pod is nil")
@@ -87,7 +108,7 @@ func ValidateRestorePod(
 		if err := validateControlEnvironment(container); err != nil {
 			return err
 		}
-		if err := validateRestoreStartupProbe(container); err != nil {
+		if err := validateStartupProbe(container); err != nil {
 			return err
 		}
 		if err := validateContainerSeccompProfile(container, options.SeccompProfile); err != nil {
@@ -219,9 +240,7 @@ func ensureRestorePodSpec(spec *corev1.PodSpec, mappings []RestoreContainerMappi
 		if err := ensureControlEnvironment(container); err != nil {
 			return err
 		}
-		if err := ensureRestoreStartupProbe(container); err != nil {
-			return err
-		}
+		ensureRestoreStartupProbe(container)
 	}
 	return nil
 }
@@ -389,11 +408,12 @@ func hasValidControlEnv(container *corev1.Container, name string) (bool, error) 
 	return found, nil
 }
 
-func ensureRestoreStartupProbe(container *corev1.Container) error {
-	if container.StartupProbe != nil {
-		return validateRestoreStartupProbe(container)
-	}
-	container.StartupProbe = &corev1.Probe{
+func ensureRestoreStartupProbe(container *corev1.Container) {
+	container.StartupProbe = canonicalRestoreStartupProbe()
+}
+
+func canonicalRestoreStartupProbe() *corev1.Probe {
+	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
 			Command: []string{"cat", path.Join(SnapshotControlMountPath, RestoreCompleteFile)},
 		}},
@@ -402,7 +422,6 @@ func ensureRestoreStartupProbe(container *corev1.Container) error {
 		FailureThreshold: restoreStartupFailureThreshold,
 		SuccessThreshold: 1,
 	}
-	return nil
 }
 
 func validateRestoreStartupProbe(container *corev1.Container) error {
@@ -410,16 +429,34 @@ func validateRestoreStartupProbe(container *corev1.Container) error {
 	if probe == nil {
 		return fmt.Errorf("container %q is missing the restore startup gate", container.Name)
 	}
-	expectedCommand := []string{"cat", path.Join(SnapshotControlMountPath, RestoreCompleteFile)}
-	if probe.Exec == nil || !reflect.DeepEqual(probe.Exec.Command, expectedCommand) ||
+	if probe.Exec == nil || !isRestoreCompletionProbeCommand(probe.Exec.Command) ||
 		probe.HTTPGet != nil || probe.TCPSocket != nil || probe.GRPC != nil {
-		return fmt.Errorf("container %q restore startup gate must check %s", container.Name, expectedCommand[1])
+		return fmt.Errorf("container %q restore startup gate must check %s", container.Name, path.Join(SnapshotControlMountPath, RestoreCompleteFile))
 	}
-	if probe.InitialDelaySeconds != 0 || probe.TimeoutSeconds != 1 || probe.PeriodSeconds != 1 ||
-		probe.FailureThreshold != restoreStartupFailureThreshold || probe.SuccessThreshold != 1 {
+	return nil
+}
+
+func validateCanonicalRestoreStartupProbe(container *corev1.Container) error {
+	if !reflect.DeepEqual(container.StartupProbe, canonicalRestoreStartupProbe()) {
 		return fmt.Errorf("container %q has a conflicting restore startup gate", container.Name)
 	}
 	return nil
+}
+
+func isRestoreCompletionProbeCommand(command []string) bool {
+	completionPath := path.Join(SnapshotControlMountPath, RestoreCompleteFile)
+	switch {
+	case len(command) == 2 && isSupportedProbeExecutable(command[0], "cat"):
+		return command[1] == completionPath
+	case len(command) == 3 && isSupportedProbeExecutable(command[0], "test"):
+		return command[1] == "-f" && command[2] == completionPath
+	default:
+		return false
+	}
+}
+
+func isSupportedProbeExecutable(actual string, executable string) bool {
+	return actual == executable || actual == "/bin/"+executable || actual == "/usr/bin/"+executable
 }
 
 func ensurePodSeccompProfile(spec *corev1.PodSpec, expected string) error {

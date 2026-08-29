@@ -23,9 +23,11 @@ restored, err := snapshotv1alpha1.BuildRestorePod(
 
 `BuildRestorePod` is a pure, atomic transformation: it returns a deep copy or
 an error and never mutates its input. Reapplying it with the same arguments is
-idempotent. `ValidateRestorePod` checks the same contract without mutation or
-Kubernetes API reads. Conflicting annotations, volumes, mounts, environment,
-probes, and security settings are rejected instead of overwritten.
+idempotent. It emits one canonical representation and validates that exact
+output. `ValidateRestorePod` checks the stable runtime contract without
+mutation or Kubernetes API reads, accepting supported equivalent completion
+gates and caller-selected probe timing. Conflicting annotations, volumes,
+mounts, environment, and security settings are rejected instead of overwritten.
 
 The producer derives each typed mapping source from the referenced
 `PodSnapshot`. The builder validates one-source-to-many-destination consistency
@@ -96,9 +98,11 @@ also injects the deprecated `DYN_SNAPSHOT_CONTROL_DIR` alias during the
 migration window; hand-authored Pods may omit the alias.
 
 The `restore-complete` sentinel probe shown above is the authoritative startup
-gate. The builder keeps workload liveness and readiness probes unchanged, but
-rejects a preexisting startup probe that does not already match the restore
-gate because Kubernetes cannot compose two startup probes. The extended
+gate. Kubernetes supports only one startup probe, so the builder replaces any
+existing startup probe with the canonical restore gate while keeping workload
+liveness and readiness probes unchanged. The runtime validator also accepts a
+direct `test -f /snapshot-control/restore-complete` gate and does not pin probe
+timing to a particular builder release. The canonical builder's extended
 failure threshold allows 1,800 consecutive one-second startup-probe failures.
 Kubernetes pauses liveness and readiness probes until the startup gate
 succeeds; if restoration exceeds that failure budget, kubelet restarts the
@@ -109,6 +113,8 @@ profile. An empty value leaves seccomp unmanaged. A destination container must
 not override a requested profile with a conflicting container-level profile.
 
 Snapshot does not modify container commands and does not inject
-`DYN_SNAPSHOT_RESTORE_STANDBY` or any other workload-specific standby setting.
-The producer must ensure each destination process remains alive and inert until
-the agent replaces it with the restored process.
+`SNAPSHOT_RESTORE_STANDBY`, its deprecated
+`DYN_SNAPSHOT_RESTORE_STANDBY` alias, or any other workload-specific standby
+setting. Both names are exported by the Go API so application owners can set
+the convention they support. The producer must ensure each destination process
+remains alive and inert until the agent replaces it with the restored process.

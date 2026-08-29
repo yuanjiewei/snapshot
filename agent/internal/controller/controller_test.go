@@ -625,6 +625,24 @@ func TestPreflightRestoreRejectsInvalidRestorePodContract(t *testing.T) {
 	}
 }
 
+func TestValidateRestoreTargetAcceptsEquivalentRestoreStartupGate(t *testing.T) {
+	pod := restorePod(map[string]string{snapshotv1alpha1.RestoreFromAnnotation: "snapshot-a"})
+	pod.Spec.Containers[0].StartupProbe = &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
+			"test", "-f", snapshotv1alpha1.SnapshotControlMountPath + "/" + snapshotv1alpha1.RestoreCompleteFile,
+		}}},
+		PeriodSeconds:    7,
+		FailureThreshold: 42,
+	}
+	snapshot, content := readySnapshotObjects()
+
+	target, mappings, err := validateRestoreTarget(pod, snapshot, content)
+
+	require.NoError(t, err)
+	assert.Equal(t, "snapshot-a", target.SnapshotName)
+	assert.Equal(t, []snapshotv1alpha1.RestoreContainerMapping{{Source: "main", Destination: "main"}}, mappings)
+}
+
 func TestPreflightRestoreRetriesInProgressCondition(t *testing.T) {
 	pod := restorePod(map[string]string{snapshotv1alpha1.RestoreFromAnnotation: "snapshot-a"})
 	pod.Status.Conditions = append(pod.Status.Conditions, corev1.PodCondition{

@@ -73,8 +73,10 @@ func TestBuildRestorePodShapesSingleDestination(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", name, got, SnapshotControlMountPath)
 		}
 	}
-	if got := restoreEnvValue(main.Env, "DYN_SNAPSHOT_RESTORE_STANDBY"); got != "" {
-		t.Fatalf("generic builder injected workload-specific standby value %q", got)
+	for _, name := range []string{RestoreStandbyModeEnv, LegacyRestoreStandbyModeEnv} {
+		if got := restoreEnvValue(main.Env, name); got != "" {
+			t.Fatalf("generic builder injected workload-specific %s value %q", name, got)
+		}
 	}
 	if main.StartupProbe == nil || main.StartupProbe.Exec == nil ||
 		!reflect.DeepEqual(main.StartupProbe.Exec.Command, []string{"cat", SnapshotControlMountPath + "/" + RestoreCompleteFile}) {
@@ -135,8 +137,13 @@ func TestBuildRestorePodUsesAuthoritativeRestoreGate(t *testing.T) {
 		ProbeHandler:  corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/ready"}},
 		PeriodSeconds: 5,
 	}
+	pod.Spec.Containers[0].StartupProbe = &corev1.Probe{
+		ProbeHandler:  corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/live"}},
+		PeriodSeconds: 3,
+	}
 	beforeLiveness := pod.Spec.Containers[0].LivenessProbe.DeepCopy()
 	beforeReadiness := pod.Spec.Containers[0].ReadinessProbe.DeepCopy()
+	beforeStartup := pod.Spec.Containers[0].StartupProbe.DeepCopy()
 
 	shaped, err := BuildRestorePod(pod, "snapshot-a", singleRestoreMapping(), RestorePodOptions{})
 	if err != nil {
@@ -145,6 +152,12 @@ func TestBuildRestorePodUsesAuthoritativeRestoreGate(t *testing.T) {
 	main := &shaped.Spec.Containers[0]
 	if !reflect.DeepEqual(main.LivenessProbe, beforeLiveness) || !reflect.DeepEqual(main.ReadinessProbe, beforeReadiness) {
 		t.Fatal("workload liveness or readiness probe was modified")
+	}
+	if reflect.DeepEqual(main.StartupProbe, beforeStartup) {
+		t.Fatal("workload startup probe was not replaced by the restore gate")
+	}
+	if !reflect.DeepEqual(pod.Spec.Containers[0].StartupProbe, beforeStartup) {
+		t.Fatal("BuildRestorePod() mutated the input startup probe")
 	}
 	expectedCommand := []string{"cat", SnapshotControlMountPath + "/" + RestoreCompleteFile}
 	if main.StartupProbe == nil || main.StartupProbe.Exec == nil ||
@@ -228,14 +241,6 @@ func TestBuildRestorePodRejectsConflictsAtomically(t *testing.T) {
 			},
 		},
 		{
-			name: "startup probe",
-			mutate: func(pod *corev1.Pod) {
-				pod.Spec.Containers[0].StartupProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{Path: "/ready"},
-				}}
-			},
-		},
-		{
 			name: "pod seccomp",
 			mutate: func(pod *corev1.Pod) {
 				pod.Spec.SecurityContext = &corev1.PodSecurityContext{SeccompProfile: runtimeDefault.DeepCopy()}
@@ -302,6 +307,40 @@ func TestValidateRestorePodAllowsMissingLegacyControlEnvironment(t *testing.T) {
 	})
 	if err := ValidateRestorePod(pod, "snapshot-a", singleRestoreMapping(), RestorePodOptions{}); err == nil {
 		t.Fatal("ValidateRestorePod() accepted conflicting deprecated environment alias")
+	}
+}
+
+func TestValidateRestorePodAcceptsEquivalentRestoreCompletionGates(t *testing.T) {
+	tests := []struct {
+		name    string
+		command []string
+	}{
+		{
+			name:    "cat through an absolute path",
+			command: []string{"/usr/bin/cat", SnapshotControlMountPath + "/" + RestoreCompleteFile},
+		},
+		{
+			name:    "test file existence",
+			command: []string{"test", "-f", SnapshotControlMountPath + "/" + RestoreCompleteFile},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pod, err := BuildRestorePod(restorePodFixture(), "snapshot-a", singleRestoreMapping(), RestorePodOptions{})
+			if err != nil {
+				t.Fatalf("BuildRestorePod() failed: %v", err)
+			}
+			pod.Spec.Containers[0].StartupProbe = &corev1.Probe{
+				ProbeHandler:     corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: test.command}},
+				PeriodSeconds:    7,
+				FailureThreshold: 42,
+			}
+
+			if err := ValidateRestorePod(pod, "snapshot-a", singleRestoreMapping(), RestorePodOptions{}); err != nil {
+				t.Fatalf("ValidateRestorePod() rejected equivalent restore gate: %v", err)
+			}
+		})
 	}
 }
 
