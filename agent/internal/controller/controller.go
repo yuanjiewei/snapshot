@@ -1233,7 +1233,14 @@ func isRestorePartiallySucceeded(pod *corev1.Pod) bool {
 }
 
 func isRestoreTerminal(pod *corev1.Pod) bool {
-	return snapshotv1alpha1.ClassifyRestoreOutcome(pod.Status.Conditions) != snapshotv1alpha1.RestoreOutcomePending
+	switch snapshotv1alpha1.ClassifyRestoreOutcome(pod.Status.Conditions) {
+	case snapshotv1alpha1.RestoreOutcomeSucceeded,
+		snapshotv1alpha1.RestoreOutcomeFailed,
+		snapshotv1alpha1.RestoreOutcomePartiallySucceeded:
+		return true
+	default:
+		return false
+	}
 }
 
 func isRestorePodActive(pod *corev1.Pod) bool {

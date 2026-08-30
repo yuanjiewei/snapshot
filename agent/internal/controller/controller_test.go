@@ -509,6 +509,35 @@ func TestReconcileRestorePodReportsAllDestinationsFailed(t *testing.T) {
 	assert.Contains(t, payload, "engine-1")
 }
 
+func TestIsRestoreTerminalRequiresKnownTerminalOutcome(t *testing.T) {
+	tests := []struct {
+		name   string
+		status corev1.ConditionStatus
+		reason string
+		want   bool
+	}{
+		{name: "succeeded", status: corev1.ConditionTrue, reason: snapshotv1alpha1.RestoreReasonSucceeded, want: true},
+		{name: "failed", status: corev1.ConditionFalse, reason: snapshotv1alpha1.RestoreReasonFailed, want: true},
+		{name: "partially succeeded", status: corev1.ConditionFalse, reason: snapshotv1alpha1.RestoreReasonPartiallySucceeded, want: true},
+		{name: "in progress", status: corev1.ConditionFalse, reason: snapshotv1alpha1.RestoreReasonInProgress},
+		{name: "unrecognized reason", status: corev1.ConditionFalse, reason: "RestoreIncompatible"},
+		{name: "unknown status", status: corev1.ConditionUnknown, reason: snapshotv1alpha1.RestoreReasonSucceeded},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pod := restorePod(nil)
+			pod.Status.Conditions = append(pod.Status.Conditions, corev1.PodCondition{
+				Type:   corev1.PodConditionType(snapshotv1alpha1.RestoredCondition),
+				Status: test.status,
+				Reason: test.reason,
+			})
+
+			assert.Equal(t, test.want, isRestoreTerminal(pod))
+		})
+	}
+}
+
 func TestRestorePodContainersKeepsAggregateInProgressWhileDestinationIsPending(t *testing.T) {
 	pod := multiRestorePod()
 	pod.Status.ContainerStatuses = pod.Status.ContainerStatuses[:1]

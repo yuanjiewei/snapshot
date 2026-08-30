@@ -31,9 +31,14 @@ func TestClassifyRestoreOutcome(t *testing.T) {
 			want: RestoreOutcomePending,
 		},
 		{
-			name:       "dependency pending",
+			name:       "unrecognized dependency reason",
 			conditions: []corev1.PodCondition{restored(corev1.ConditionFalse, "SnapshotPending")},
-			want:       RestoreOutcomePending,
+			want:       RestoreOutcomeUnknown,
+		},
+		{
+			name:       "unrecognized terminal reason",
+			conditions: []corev1.PodCondition{restored(corev1.ConditionFalse, "RestoreIncompatible")},
+			want:       RestoreOutcomeUnknown,
 		},
 		{
 			name:       "restore in progress",
@@ -43,7 +48,7 @@ func TestClassifyRestoreOutcome(t *testing.T) {
 		{
 			name:       "unknown status",
 			conditions: []corev1.PodCondition{restored(corev1.ConditionUnknown, RestoreReasonSucceeded)},
-			want:       RestoreOutcomePending,
+			want:       RestoreOutcomeUnknown,
 		},
 		{
 			name:       "succeeded",

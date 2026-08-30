@@ -9,8 +9,11 @@ import corev1 "k8s.io/api/core/v1"
 type RestoreOutcome string
 
 const (
+	// RestoreOutcomeUnknown means the Restored condition exists but cannot be
+	// classified safely by this API version.
+	RestoreOutcomeUnknown RestoreOutcome = "Unknown"
 	// RestoreOutcomePending means restore has not reached a terminal outcome.
-	// It includes dependency waits and active restore execution.
+	// It includes an absent condition and active restore execution.
 	RestoreOutcomePending RestoreOutcome = "Pending"
 	// RestoreOutcomeSucceeded means every requested destination was restored.
 	RestoreOutcomeSucceeded RestoreOutcome = "Succeeded"
@@ -35,8 +38,8 @@ const (
 )
 
 // ClassifyRestoreOutcome returns the public restore outcome represented by Pod
-// conditions. A missing Restored condition, an unknown status, or any
-// nonterminal false reason is Pending.
+// conditions. A missing Restored condition is Pending. An unrecognized status
+// or reason is Unknown so callers can apply their own version-skew policy.
 func ClassifyRestoreOutcome(conditions []corev1.PodCondition) RestoreOutcome {
 	for _, condition := range conditions {
 		if condition.Type != corev1.PodConditionType(RestoredCondition) {
@@ -46,15 +49,17 @@ func ClassifyRestoreOutcome(conditions []corev1.PodCondition) RestoreOutcome {
 			return RestoreOutcomeSucceeded
 		}
 		if condition.Status != corev1.ConditionFalse {
-			return RestoreOutcomePending
+			return RestoreOutcomeUnknown
 		}
 		switch condition.Reason {
 		case RestoreReasonFailed:
 			return RestoreOutcomeFailed
 		case RestoreReasonPartiallySucceeded:
 			return RestoreOutcomePartiallySucceeded
-		default:
+		case RestoreReasonInProgress:
 			return RestoreOutcomePending
+		default:
+			return RestoreOutcomeUnknown
 		}
 	}
 	return RestoreOutcomePending
