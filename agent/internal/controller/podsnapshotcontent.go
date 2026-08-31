@@ -251,6 +251,15 @@ func (w *NodeController) reconcileSourcePod(ctx context.Context, pod *corev1.Pod
 		return w.setSnapshotContentFailed(ctx, content, "InvalidDestination", err)
 	}
 	if artifactPresent(artifactPath, contentUID, containerName) {
+		// Adopting an artifact skips the dump entirely, so the stored CRIU mount table is
+		// what a restore will replay. If the source pod's mount shape has moved since the
+		// capture, that table names paths this pod does not have, and the mismatch would
+		// only surface as a CRIU bind-mount failure at restore, far from its cause.
+		if diff := adoptedArtifactMountDiff(artifactPath, pod, containerName); len(diff) > 0 {
+			return w.setSnapshotContentFailed(ctx, content, "ArtifactIncompatible",
+				fmt.Errorf("existing artifact at %s was captured with a different mount plan than pod %s/%s container %q (-stored/+current): %s",
+					artifactPath, pod.Namespace, pod.Name, containerName, strings.Join(diff, ", ")))
+		}
 		return w.markCheckpointReady(ctx, content)
 	}
 
@@ -587,6 +596,7 @@ func (w *NodeController) executorCheckpoint(ctx context.Context, params Checkpoi
 		PodName:       params.Pod.Name,
 		PodNamespace:  params.Pod.Namespace,
 		PodIP:         params.Pod.Status.PodIP,
+		MountPlan:     buildMountPlan(params.Pod, params.ContainerName),
 		Clientset:     w.clientset,
 	}
 	if err := executor.Checkpoint(ctx, w.runtime, log, req, w.config); err != nil {
@@ -659,6 +669,20 @@ func artifactPresent(destination, contentUID, containerName string) bool {
 	return err == nil &&
 		manifest.Artifact.ContentUID == contentUID &&
 		manifest.Artifact.ContainerName == containerName
+}
+
+// adoptedArtifactMountDiff reports how a pre-existing artifact's recorded mount plan differs
+// from the current source pod's, as "-stored"/"+current" entries. Empty means compatible.
+//
+// An artifact written before the mount plan was recorded carries none, and is treated as
+// compatible: there is nothing to compare it against, and refusing every such artifact would
+// break in-flight recovery for checkpoints captured by an older agent.
+func adoptedArtifactMountDiff(artifactPath string, pod *corev1.Pod, containerName string) []string {
+	manifest, err := types.ReadManifest(artifactPath)
+	if err != nil || len(manifest.K8s.MountPlan) == 0 {
+		return nil
+	}
+	return types.DiffMountPlan(manifest.K8s.MountPlan, buildMountPlan(pod, containerName))
 }
 
 // contentNameFromInformerObj extracts the object name from a dynamic informer object,

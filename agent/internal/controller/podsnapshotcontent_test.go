@@ -379,6 +379,63 @@ func TestReconcileSnapshotContent_ResumeWritesReady(t *testing.T) {
 	require.NotNil(t, cond)
 }
 
+// writeAdoptableArtifact stages a pre-existing artifact carrying mountPlan, so the resume
+// path finds something to adopt.
+func writeAdoptableArtifact(t *testing.T, w *NodeController, contentUID string, mountPlan []string) {
+	t.Helper()
+	dest := filepath.Join(w.config.Storage.BasePath, "artifacts", contentUID, "containers", "main")
+	require.NoError(t, os.MkdirAll(dest, 0o755))
+	require.NoError(t, snapshottypes.WriteManifest(dest, &snapshottypes.CheckpointManifest{
+		Artifact: snapshottypes.ArtifactManifest{ContentUID: contentUID, ContainerName: "main"},
+		K8s:      snapshottypes.SourcePodManifest{MountPlan: mountPlan},
+	}))
+}
+
+// podWithMount returns a source pod whose target container mounts one emptyDir at path.
+func podWithMount(path string) *corev1.Pod {
+	pod := makeSourcePod()
+	pod.Spec.Containers = []corev1.Container{{
+		Name:         "main",
+		VolumeMounts: []corev1.VolumeMount{{Name: "scratch", MountPath: path}},
+	}}
+	return pod
+}
+
+// Adopting a pre-existing artifact skips the dump, so its stored mount table is what a
+// restore replays. A matching pod spec adopts; a moved mount must be refused here rather
+// than surfacing as a CRIU bind-mount failure at restore time.
+func TestReconcileSourcePod_AdoptsArtifactWithMatchingMountPlan(t *testing.T) {
+	content := makeWorkOrder("podsnapshotcontent-abc", "node-a", "abc")
+	pod := podWithMount("/run/dynamo-snapshot")
+	fc := &fakeCheckpointer{}
+	w := makeNodeController(t, fc, content, pod)
+	writeAdoptableArtifact(t, w, string(content.UID), []string{"scratch:/run/dynamo-snapshot"})
+
+	require.NoError(t, w.reconcileSourcePod(context.Background(), pod))
+	assert.False(t, fc.wasCalled())
+	got := getContent(t, w, content.Name)
+	assert.True(t, meta.IsStatusConditionTrue(got.Status.Conditions, snapshotv1alpha1.PodSnapshotConditionReady))
+	assert.False(t, meta.IsStatusConditionTrue(got.Status.Conditions, snapshotv1alpha1.PodSnapshotConditionFailed))
+}
+
+func TestReconcileSourcePod_RefusesArtifactWithMovedMount(t *testing.T) {
+	content := makeWorkOrder("podsnapshotcontent-abc", "node-a", "abc")
+	pod := podWithMount("/run/moved")
+	fc := &fakeCheckpointer{}
+	w := makeNodeController(t, fc, content, pod)
+	writeAdoptableArtifact(t, w, string(content.UID), []string{"scratch:/run/dynamo-snapshot"})
+
+	require.NoError(t, w.reconcileSourcePod(context.Background(), pod))
+	assert.False(t, fc.wasCalled())
+	got := getContent(t, w, content.Name)
+	cond := meta.FindStatusCondition(got.Status.Conditions, snapshotv1alpha1.PodSnapshotConditionFailed)
+	require.NotNil(t, cond)
+	assert.Equal(t, "ArtifactIncompatible", cond.Reason)
+	assert.Contains(t, cond.Message, "-scratch:/run/dynamo-snapshot")
+	assert.Contains(t, cond.Message, "+scratch:/run/moved")
+	assert.False(t, meta.IsStatusConditionTrue(got.Status.Conditions, snapshotv1alpha1.PodSnapshotConditionReady))
+}
+
 // TestReconcileSourcePod_ArtifactRecoveryPrecedesLivenessFailures covers the crash window:
 // the dump committed the artifact and terminated the source (pod Failed, target container
 // exited 137, PID unresolvable), but the agent died before the Ready write. Recovery must

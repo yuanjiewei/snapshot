@@ -6,6 +6,7 @@ package types
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	criurpc "github.com/checkpoint-restore/go-criu/v8/rpc"
@@ -28,7 +29,7 @@ func TestManifestRoundTrip(t *testing.T) {
 			External: []string{"net[12345]:extNetNs"},
 			SkipMnt:  []string{"/proc/kcore"},
 		},
-		NewSourcePodManifest("ctr-abc", 42, "node-1", "my-pod", "default", "10.0.0.11", []string{"pipe:[111]", "pipe:[222]", "pipe:[333]"}),
+		NewSourcePodManifest("ctr-abc", 42, "node-1", "my-pod", "default", "10.0.0.11", []string{"pipe:[111]", "pipe:[222]", "pipe:[333]"}, nil),
 		OverlayManifest{
 			Exclusions:     OverlaySettings{Exclusions: []string{"/proc", "/sys"}},
 			UpperDir:       "/var/lib/containerd/upper",
@@ -175,5 +176,29 @@ func TestManifestRequiresContainerName(t *testing.T) {
 	err := WriteManifest(t.TempDir(), &CheckpointManifest{Artifact: ArtifactManifest{ContentUID: "content-uid-123"}})
 	if err == nil || err.Error() != "checkpoint manifest is missing artifact.containerName" {
 		t.Fatalf("expected missing container name error, got %v", err)
+	}
+}
+
+// A moved or added mount must show up as a diff: that is what stops a stale artifact from
+// being adopted for a pod whose mount table no longer matches it.
+func TestDiffMountPlan(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		stored, current []string
+		want            []string
+	}{
+		{name: "identical", stored: []string{"a:/x"}, current: []string{"a:/x"}},
+		{name: "both empty"},
+		{name: "moved", stored: []string{"a:/x"}, current: []string{"a:/y"}, want: []string{"-a:/x", "+a:/y"}},
+		{name: "added", stored: []string{"a:/x"}, current: []string{"a:/x", "b:/y"}, want: []string{"+b:/y"}},
+		{name: "removed", stored: []string{"a:/x", "b:/y"}, current: []string{"a:/x"}, want: []string{"-b:/y"}},
+		{name: "subpath differs", stored: []string{"a:/x:s1"}, current: []string{"a:/x:s2"}, want: []string{"-a:/x:s1", "+a:/x:s2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DiffMountPlan(tc.stored, tc.current)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("DiffMountPlan(%v, %v) = %v, want %v", tc.stored, tc.current, got, tc.want)
+			}
+		})
 	}
 }
