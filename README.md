@@ -39,6 +39,20 @@ new replica comes online in seconds instead of minutes.
   hardware and driver versions, skipping model loading and warm-up; the process
   resumes from where it was checkpointed.
 
+## Benchmarks
+
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/development/img/cold-start-vs-snapshot-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/development/img/cold-start-vs-snapshot-light.svg">
+    <img width="900" alt="Paired column chart comparing cold start against Snapshot for each model. Cold start ranges from 52 to 102 seconds, Snapshot from 3.5 to 40.9 seconds." src="docs/development/img/cold-start-vs-snapshot-light.svg">
+  </picture>
+</div>
+
+<p align="center"><i><b>Figure 1.</b> Restoring a captured workload is 2.4 to 14.9 times faster than starting the same workload from scratch on the same hardware.</i></p>
+
+For the experiment setup, the per stage breakdown, and the full results, see [benchmarks](docs/development/benchmarks.md).
+
 ## When to use it
 
 - **Autoscaling inference** — scale out from an existing snapshot: bring the N+1
