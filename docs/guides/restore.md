@@ -9,7 +9,8 @@ the container during pod startup.
 
 - A ready `PodSnapshot` exists (see [Checkpoint a replica](checkpoint.md)).
 - The restored replica reuses the source's snapshot-ready pod spec, provided as a
-  ready-to-apply `restore-deployment.yaml` in each build-and-deploy guide.
+  ready-to-apply [`restore-deployment.yaml`](vllm/restore-deployment.yaml) in each
+  build-and-deploy guide.
 
 ## Example
 
