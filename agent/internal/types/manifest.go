@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -94,9 +95,16 @@ type SourcePodManifest struct {
 
 	// StdioFDs holds readlink targets for FDs 0, 1, 2 (e.g. "pipe:[12345]").
 	StdioFDs []string `yaml:"stdioFDs,omitempty"`
+
+	// MountPlan is the target container's pod-spec mount set at dump time, as
+	// sorted "<volumeName>:<mountPath>[:<subPath>]" entries. The CRIU images
+	// carry this mount table, so a pre-existing artifact may only be adopted
+	// for a pod whose plan still matches — otherwise restore fails much later
+	// with a bind-mount error naming a path that no longer exists.
+	MountPlan []string `yaml:"mountPlan,omitempty"`
 }
 
-func NewSourcePodManifest(containerID string, pid int, sourceNode, podName, podNamespace, podIP string, stdioFDs []string) SourcePodManifest {
+func NewSourcePodManifest(containerID string, pid int, sourceNode, podName, podNamespace, podIP string, stdioFDs, mountPlan []string) SourcePodManifest {
 	return SourcePodManifest{
 		ContainerID:  containerID,
 		PID:          pid,
@@ -105,7 +113,26 @@ func NewSourcePodManifest(containerID string, pid int, sourceNode, podName, podN
 		PodNamespace: podNamespace,
 		PodIP:        podIP,
 		StdioFDs:     append([]string(nil), stdioFDs...),
+		MountPlan:    append([]string(nil), mountPlan...),
 	}
+}
+
+// DiffMountPlan returns the entries present in only one of the two plans, as
+// "-<entry>" for stored-only and "+<entry>" for current-only. An empty result
+// means the plans match.
+func DiffMountPlan(stored, current []string) []string {
+	var diff []string
+	for _, e := range stored {
+		if !slices.Contains(current, e) {
+			diff = append(diff, "-"+e)
+		}
+	}
+	for _, e := range current {
+		if !slices.Contains(stored, e) {
+			diff = append(diff, "+"+e)
+		}
+	}
+	return diff
 }
 
 // OverlayManifest holds runtime overlay state captured at checkpoint time.

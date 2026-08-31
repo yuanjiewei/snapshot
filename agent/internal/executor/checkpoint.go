@@ -34,7 +34,11 @@ type CheckpointRequest struct {
 	PodName       string
 	PodNamespace  string
 	PodIP         string
-	Clientset     kubernetes.Interface
+	// MountPlan is the target container's pod-spec mount set, recorded in the
+	// manifest so a later adoption can reject an artifact whose mount table no
+	// longer matches the pod it would be restored into.
+	MountPlan []string
+	Clientset kubernetes.Interface
 }
 
 type checkpointPhaseTimings struct {
@@ -244,7 +248,7 @@ func configureCheckpoint(
 		req.ContentUID,
 		req.ContainerName,
 		types.NewCRIUDumpManifest(criuOpts, cfg.CRIU),
-		types.NewSourcePodManifest(req.ContainerID, state.PID, req.NodeName, req.PodName, req.PodNamespace, req.PodIP, state.StdioFDs),
+		types.NewSourcePodManifest(req.ContainerID, state.PID, req.NodeName, req.PodName, req.PodNamespace, req.PodIP, state.StdioFDs, req.MountPlan),
 		types.NewOverlayManifest(cfg.Overlay, state.UpperDir, state.OCISpec),
 	)
 	if len(state.CUDANSPIDs) > 0 {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -61,6 +62,30 @@ func isContainerReady(pod *corev1.Pod, containerName string) bool {
 		}
 	}
 	return false
+}
+
+// buildMountPlan returns the target container's pod-spec mount set as sorted
+// "<volumeName>:<mountPath>[:<subPath>]" entries. This is what the CRIU images
+// bake a mount table for, so it is the shape an adopted artifact must still
+// match. Returns nil when the container is absent from the spec.
+func buildMountPlan(pod *corev1.Pod, containerName string) []string {
+	for i := range pod.Spec.Containers {
+		c := &pod.Spec.Containers[i]
+		if c.Name != containerName {
+			continue
+		}
+		plan := make([]string, 0, len(c.VolumeMounts))
+		for _, m := range c.VolumeMounts {
+			entry := m.Name + ":" + m.MountPath
+			if m.SubPath != "" {
+				entry += ":" + m.SubPath
+			}
+			plan = append(plan, entry)
+		}
+		slices.Sort(plan)
+		return plan
+	}
+	return nil
 }
 
 // checkpointLeaseName returns a DNS-safe Lease name derived from the immutable
