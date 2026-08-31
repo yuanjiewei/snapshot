@@ -47,3 +47,18 @@ func TestCheckpointPreparesContentArtifactParents(t *testing.T) {
 	assert.DirExists(t, filepath.Dir(finalDir))
 	assert.DirExists(t, filepath.Join(cfg.Storage.BasePath, "artifacts", "content-uid", ".tmp"))
 }
+
+// A rootfs-diff capture failure must fail the checkpoint. Swallowing it publishes an
+// artifact whose restore silently drops every container-created file.
+func TestCaptureOverlayFailsCheckpointOnRootfsDiffError(t *testing.T) {
+	manifest := &types.CheckpointManifest{}
+
+	// Absent upperdir: nothing to capture, no failure.
+	duration, err := captureOverlay("", t.TempDir(), manifest)
+	require.NoError(t, err)
+	assert.Zero(t, duration)
+
+	// Unreadable upperdir: tar fails and the error must propagate.
+	_, err = captureOverlay(filepath.Join(t.TempDir(), "missing-upperdir"), t.TempDir(), manifest)
+	require.ErrorContains(t, err, "failed to capture rootfs diff")
+}
