@@ -181,6 +181,25 @@ func TestBuildMountPolicy(t *testing.T) {
 			wantExt: map[string]string{"/proc/acpi": "/proc/acpi"},
 		},
 		{
+			name: "the container's procfs and its proc binds are mounted by CRIU, a host proc mount stays external",
+			mounts: []types.MountInfo{
+				{MountPoint: "/proc", FSType: "proc", IsOCIManaged: true},
+				{MountPoint: "/proc/sys", FSType: "proc", IsOCIManaged: true},
+				{MountPoint: "/host/proc", FSType: "proc", IsOCIManaged: true},
+			},
+			wantExt:      map[string]string{"/host/proc": "/host/proc"},
+			wantNotInExt: []string{"/proc", "/proc/sys"},
+		},
+		{
+			name: "the NVIDIA toolkit's params overlay is externalized, not skipped",
+			mounts: []types.MountInfo{
+				{MountPoint: "/proc/driver/nvidia/params", FSType: "tmpfs", IsOCIManaged: false},
+				{MountPoint: "/proc/driver/nvidia/gpus/0000:0a:00.0", FSType: "proc", IsOCIManaged: false},
+			},
+			wantExt:     map[string]string{"/proc/driver/nvidia/params": "/proc/driver/nvidia/params"},
+			wantSkipped: []string{"/proc/driver/nvidia/gpus/0000:0a:00.0"},
+		},
+		{
 			name: "/dev/shm tmpfs is not externalized",
 			mounts: []types.MountInfo{
 				{MountPoint: "/dev/shm", FSType: "tmpfs"},

@@ -76,14 +76,20 @@ func ClassifyMounts(mounts []types.MountInfo, ociSpec *specs.Spec, rootFS string
 	return mounts
 }
 
+// nvidiaParamsPath is where the NVIDIA Container Toolkit binds its copy of the
+// driver's params file, with ModifyDeviceFiles set to 0, over procfs.
+const nvidiaParamsPath = "/proc/driver/nvidia/params"
+
 // BuildMountPolicy classifies mounts and masked paths for CRIU dump.
 // Mounts must already have IsOCIManaged set by ClassifyMounts.
 //
 // Policy (evaluated top to bottom):
-//  1. Skip: non-OCI /proc/*, /sys/*, /run/* submounts (virtual/runtime, not in placeholder)
-//  2. Native: /dev/shm tmpfs (CRIU saves and restores content)
-//  3. Masked: OCI masked non-directory paths that exist under rootFS → /dev/null
-//  4. Externalize: everything else (OCI mounts the runtime recreates in placeholder)
+//  1. Externalize: the toolkit's params overlay at /proc/driver/nvidia/params
+//  2. Skip: non-OCI /proc/*, /sys/*, /run/* submounts (virtual/runtime, not in placeholder)
+//  3. Native: the container's procfs at /proc and its proc binds under it
+//  4. Native: /dev/shm tmpfs (CRIU saves and restores content)
+//  5. Masked: OCI masked non-directory paths that exist under rootFS → /dev/null
+//  6. Externalize: everything else (OCI mounts the runtime recreates in placeholder)
 func BuildMountPolicy(mounts []types.MountInfo, rootFS string, maskedPaths []string) (map[string]string, []string) {
 	extMap := make(map[string]string, len(mounts))
 	var skipped []string
@@ -93,9 +99,32 @@ func BuildMountPolicy(mounts []types.MountInfo, rootFS string, maskedPaths []str
 			continue
 		}
 
+		// The toolkit's params file hides ModifyDeviceFiles=1 from the driver's
+		// user-space. It is not in the OCI spec (a runtime hook adds it), so the
+		// skip below would drop it and a restored process would read the host's
+		// params. The placeholder is a GPU container prepared by the same
+		// toolkit, so it holds the same overlay: bind that one.
+		if !m.IsOCIManaged && m.MountPoint == nvidiaParamsPath {
+			extMap[m.MountPoint] = m.MountPoint
+			continue
+		}
+
 		// Skip non-OCI virtual/runtime mounts — these won't exist in the placeholder
 		if !m.IsOCIManaged && (strings.HasPrefix(m.MountPoint, "/proc/") || strings.HasPrefix(m.MountPoint, "/sys/") || strings.HasPrefix(m.MountPoint, "/run/")) {
 			skipped = append(skipped, m.MountPoint)
+			continue
+		}
+
+		// The container's procfs must be mounted by CRIU, not bound from the
+		// placeholder. CRIU restores the process tree into a new PID namespace
+		// nested in the placeholder's, and mounts the restored mount namespace
+		// from inside it, so a procfs CRIU mounts belongs to the restored PID
+		// namespace, as the dumped one did. The placeholder's procfs belongs to
+		// the outer one: through it /proc/self names the outer PID and
+		// /proc/self/task/<tid> does not exist, and cuInit fails with 304 when it
+		// cannot write its thread's comm there. The proc binds under /proc
+		// (the OCI readonlyPaths) are then binds of that procfs, as at dump.
+		if m.FSType == "proc" && (m.MountPoint == "/proc" || strings.HasPrefix(m.MountPoint, "/proc/")) {
 			continue
 		}
 
